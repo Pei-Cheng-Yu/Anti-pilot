@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "planner": "app.langgraph.planner.graphs.generate_roadmap.graph:build_planner_graph",
+    "quick_reviewer": "app.langgraph.planner.graphs.generate_roadmap.graph:build_planner_graph"
+  },
+  "env": "../.env"
+}
