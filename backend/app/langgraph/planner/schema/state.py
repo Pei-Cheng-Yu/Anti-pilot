@@ -17,7 +17,7 @@ from typing_extensions import TypedDict
 class PlannerState(TypedDict):
     goal_spec: Optional[GoalSpec]
     learning_profile: Optional[LearningProfile]
-    roadmap_uuid: str
+    roadmap_id: str
     roadmap: RoadmapItem
     milestones: list[MilestoneItem]
     milestone_quick_review: Optional[QuickReviewResponse]

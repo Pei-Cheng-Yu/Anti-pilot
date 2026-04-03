@@ -59,6 +59,9 @@ class LearningProfile(BaseModel):
 
 
 class SkillPathItem(BaseModel):
+    roadmap_id: str = Field(
+        ..., description="The parent roadmap this skill path belongs to."
+    )
     skillpath_id: str = Field(
         ..., description="Unique identifier for this skill path unit."
     )
@@ -108,7 +111,7 @@ class SkillPathItem(BaseModel):
 
 
 class MilestoneItem(BaseModel):
-    roadmap_uuid: str = Field(
+    roadmap_id: str = Field(
         ..., description="The parent roadmap this milestone belongs to."
     )
     milestone_id: str = Field(..., description="Unique identifier for this milestone.")
@@ -144,6 +147,7 @@ class MilestoneItem(BaseModel):
 
 class RoadmapItem(BaseModel):
     roadmap_id: str
+    title: str = Field(..., description="Short title of the roadmap")
     version: int = Field(
         ...,
         description="Version number of the roadmap. Increment this when the roadmap is revised.",

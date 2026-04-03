@@ -18,10 +18,11 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 def main() -> None:
     graph = build_evaluate_graph()
 
-    roadmap_uuid = "test-roadmap"
+    roadmap_id = "test-roadmap"
     milestone_id = str(uuid4())
 
     initial_state = {
+        "roadmap_id": roadmap_id,
         "goal_spec": GoalSpec(
             title="Learn FastAPI Backend Development",
             description="Learn FastAPI from beginner to building a CRUD backend.",
@@ -49,7 +50,7 @@ def main() -> None:
         ),
         "milestones": [
             MilestoneItem(
-                roadmap_uuid=roadmap_uuid,
+                roadmap_id=roadmap_id,
                 milestone_id=milestone_id,
                 title="Build CRUD Backend with FastAPI",
                 description="Learn enough FastAPI to build a CRUD backend.",
@@ -64,6 +65,7 @@ def main() -> None:
         ],
         "skillpaths": [
             SkillPathItem(
+                roadmap_id=roadmap_id,
                 skillpath_id=str(uuid4()),
                 milestone_id=milestone_id,
                 title="Learn backend development with FastAPI, database design, authentication, deployment, and Docker",
@@ -84,6 +86,7 @@ def main() -> None:
                 affected_downstream_ids=[],
             ),
             SkillPathItem(
+                roadmap_id=roadmap_id,
                 skillpath_id=str(uuid4()),
                 milestone_id=milestone_id,
                 title="Install FastAPI",
@@ -98,6 +101,7 @@ def main() -> None:
                 affected_downstream_ids=[],
             ),
             SkillPathItem(
+                roadmap_id=roadmap_id,
                 skillpath_id=str(uuid4()),
                 milestone_id=milestone_id,
                 title="Write one GET endpoint",

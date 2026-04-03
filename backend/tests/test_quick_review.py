@@ -18,10 +18,10 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 async def main() -> None:
     graph = build_quick_review_logic()
 
-    roadmap_uuid = str(uuid4())
+    roadmap_id = str(uuid4())
 
     initial_state = {
-        "roadmap_uuid": roadmap_uuid,
+        "roadmap_id": roadmap_id,
         "goal_spec": GoalSpec(
             title="Learn FastAPI Backend Development",
             description="Learn FastAPI from beginner to building a CRUD backend.",
@@ -50,7 +50,7 @@ async def main() -> None:
         "milestone_revision_count": 0,
         "milestones": [
             MilestoneItem(
-                roadmap_uuid=roadmap_uuid,
+                roadmap_id=roadmap_id,
                 milestone_id=str(uuid4()),
                 title="Learn Docker",
                 description="Understand docker basics.",
@@ -63,7 +63,7 @@ async def main() -> None:
                 revision_reason=None,
             ),
             MilestoneItem(
-                roadmap_uuid=roadmap_uuid,
+                roadmap_id=roadmap_id,
                 milestone_id=str(uuid4()),
                 title="Learn HTTP Basics",
                 description="Learn requests, responses, methods, and status codes.",
@@ -76,7 +76,7 @@ async def main() -> None:
                 revision_reason=None,
             ),
             MilestoneItem(
-                roadmap_uuid=roadmap_uuid,
+                roadmap_id=roadmap_id,
                 milestone_id=str(uuid4()),
                 title="Learn Relational Database Design",
                 description="Understand tables, primary keys, foreign keys, and SQL basics.",
