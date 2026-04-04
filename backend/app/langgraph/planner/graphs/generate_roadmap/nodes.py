@@ -5,8 +5,9 @@ from app.langgraph.planner.policy_prompt.milestone import (
     SHARED_MILESTONE_POLICY,
     SHARED_MILESTONE_POLICY_CORE,
 )
-from app.langgraph.planner.schema.entities import MilestoneItem, QuickReviewResponse
+from app.langgraph.planner.schema.review import QuickReviewResponse
 from app.langgraph.planner.schema.state import PlannerState
+from app.schema.entities import MilestoneItem
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 

@@ -4,11 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.langgraph.planner.graphs.generate_roadmap.graph import build_quick_review_logic
-from app.langgraph.planner.schema.entities import (
-    GoalSpec,
-    LearningProfile,
-    MilestoneItem,
-)
+from app.schema.entities import GoalSpec, LearningProfile, MilestoneItem
 from dotenv import load_dotenv
 
 # need loadenv manually so langsmith can trace this run
