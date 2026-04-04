@@ -3,12 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.langgraph.planner.graphs.evaluate.graph import build_evaluate_graph
-from app.langgraph.planner.schema.entities import (
-    GoalSpec,
-    LearningProfile,
-    MilestoneItem,
-    SkillPathItem,
-)
+from app.schema.entities import GoalSpec, LearningProfile, MilestoneItem, SkillPathItem
 from dotenv import load_dotenv
 
 # need loadenv manually so langsmith can trace this run
@@ -112,7 +107,6 @@ def main() -> None:
                 affected_downstream_ids=[],
             ),
         ],
-        "skillpaths_review": [],
         "skillpath_revisions": [],
     }
 
