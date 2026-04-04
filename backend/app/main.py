@@ -95,6 +95,19 @@ async def create_goal(request: CreateGoalRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/v1/roadmaps")
+async def list_roadmaps():
+    """
+    Fetches all roadmaps from Supabase.
+    """
+    try:
+        res = supabase.table("roadmaps").select("*").execute()
+        return res.data
+    except Exception as e:
+        print(f"Error in list_roadmaps: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/v1/roadmaps/{roadmap_id}")
 async def get_roadmap(roadmap_id: str):
     """
