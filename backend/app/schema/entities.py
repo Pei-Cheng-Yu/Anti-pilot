@@ -156,3 +156,43 @@ class RoadmapItem(BaseModel):
         description="Key assumptions used when generating this roadmap, such as weekly study time or prior knowledge.",
     )
     target_outcome: str
+
+
+# --- Nested read models for agent consumption ---
+
+
+class MilestoneWithSkillPaths(BaseModel):
+    milestone_id: str = Field(..., description="Unique identifier for this milestone.")
+    roadmap_uuid: str = Field(..., description="Parent roadmap ID.")
+    title: str = Field(..., description="Short title of the milestone.")
+    description: str = Field(
+        ..., description="Explanation of what this milestone covers."
+    )
+    objective: str = Field(
+        ..., description="Concrete learning objective of this milestone."
+    )
+    estimated_hours: float = Field(..., description="Estimated hours needed.")
+    order_index: int = Field(..., description="Order of this milestone in the roadmap.")
+    dependency_titles: list[str] = Field(default_factory=list)
+    prerequisite_milestone_ids: list[str] = Field(default_factory=list)
+    status: Literal["ready", "generated", "revising", "completed", "revised"] = Field(
+        default="ready"
+    )
+    need_modification: bool = Field(default=False)
+    revision_reason: Optional[str] = Field(default=None)
+    skillpaths: list[SkillPathItem] = Field(
+        default_factory=list,
+        description="Skillpaths nested under this milestone, ordered by prerequisites.",
+    )
+
+
+class RoadmapFull(BaseModel):
+    roadmap_id: str
+    version: int
+    summary: str
+    target_outcome: str
+    assumptions: list[str] = Field(default_factory=list)
+    milestones: list[MilestoneWithSkillPaths] = Field(
+        default_factory=list,
+        description="All milestones with their skillpaths nested inside, ordered by order_index.",
+    )

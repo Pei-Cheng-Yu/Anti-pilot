@@ -39,7 +39,7 @@
 5. Create `.env` from `example.env`: `cp example.env .env`, then modify the content in `.env`
 6. Run test for current graph, and tracing on LangSmith
    > make sure u set up the `.env`
-   
+
     Start the development server to connect your agent to LangSmith Studio:
     ```
     cd backend
@@ -50,6 +50,3 @@
     cd backend
     python -m tests.test_planner_to_evaluate  //can replace with other file in /backend/tests
     ```
-  
-  
-  
