@@ -61,3 +61,13 @@ venv-win/
 deploy.sh
 #
 */env.yaml
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.hypothesis/
+.coverage
+htmlcov/
+test_env/
+.claude/
