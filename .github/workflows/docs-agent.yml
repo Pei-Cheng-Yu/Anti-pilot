@@ -7,6 +7,9 @@ on:
         description: "Git ref used to compute changed files"
         required: true
         default: "origin/main"
+  push:
+    branches:
+      - docs-agent
 
 permissions:
   contents: write
@@ -39,12 +42,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run docs agent
-        run: python scripts/run_docs_agent.py "${{ inputs.base_ref }}"
+        run: python scripts/run_docs_agent.py "${{ github.event.inputs.base_ref || 'origin/main' }}"
 
       - name: Create docs PR
         uses: peter-evans/create-pull-request@v7
         with:
-          branch: docs-agent/update-docs
+          branch: auto-docs-update
           commit-message: "docs: update generated docs"
           title: "docs: update generated docs"
           body: |

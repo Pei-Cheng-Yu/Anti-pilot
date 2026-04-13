@@ -3,6 +3,7 @@ import os
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from dotenv import load_dotenv
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
 
@@ -11,7 +12,7 @@ REPO_ROOT = os.path.abspath(
 )
 DOCS_ROOT = os.path.join(REPO_ROOT, "docs")
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
-DOCS_AGENT_MODEL = os.getenv("DOCS_AGENT_MODEL", "google_genai:gemini-3-flash-preview")
+DOCS_AGENT_MODEL = os.getenv("DOCS_AGENT_MODEL", "gemini-3-flash-preview")
 
 _SYSTEM_PROMPT = """You are a docs maintenance agent.
 
@@ -29,6 +30,7 @@ Do not create nested paths like /docs/docs/ or /workspace/docs/.
 
 def create_docs_agent():
     """Create a deep agent that can update repository docs."""
+    model = ChatGoogleGenerativeAI(model=DOCS_AGENT_MODEL)
     backend = CompositeBackend(
         default=StateBackend(),
         routes={
@@ -38,7 +40,7 @@ def create_docs_agent():
     )
 
     return create_deep_agent(
-        model=DOCS_AGENT_MODEL,
+        model=model,
         system_prompt=_SYSTEM_PROMPT,
         backend=backend,
         skills=["/skills/"],

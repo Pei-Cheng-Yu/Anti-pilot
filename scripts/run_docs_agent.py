@@ -42,15 +42,23 @@ def get_worktree_changes() -> list[str]:
     for line in output.splitlines():
         if not line.strip():
             continue
-        path = line[3:].strip()
+        if len(line) < 4:
+            continue
+        path = line[3:]
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
-        changed.append(path)
+        changed.append(path.strip())
     return changed
 
 
 def normalize_paths(paths: list[str]) -> set[str]:
-    return {path.replace("\\", "/") for path in paths}
+    normalized: set[str] = set()
+    for path in paths:
+        fixed = path.replace("\\", "/")
+        if fixed.startswith("ocs/"):
+            fixed = "d" + fixed
+        normalized.add(fixed)
+    return normalized
 
 
 async def main() -> None:
