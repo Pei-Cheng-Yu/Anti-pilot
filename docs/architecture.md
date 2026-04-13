@@ -11,6 +11,7 @@ The system consists of the following components:
 - **AI Agents**: Powered by LangGraph, these agents handle complex tasks:
     - **Learning Director**: Oversees the learning process and coordinates between different skills.
     - **Planner**: A graph-based agent responsible for evaluating learning needs and generating structured roadmaps.
+    - **Docs Agent**: Maintains project documentation by analyzing code changes and updating relevant docs.
 - **MCP Server**: Provides a standardized interface for agents to interact with the system's tools and services.
 - **Infrastructure**: Containerized using Docker and managed with Docker Compose.
 

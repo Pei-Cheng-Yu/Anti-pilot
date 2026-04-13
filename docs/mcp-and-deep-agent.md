@@ -33,3 +33,26 @@ The `Planner` is a specialized LangGraph that handles the logic of roadmap creat
 - **Evaluate**: Assessment of the learning path.
 - **Generate Roadmap**: Creating the actual roadmap steps.
 - **Review**: Ensuring the roadmap meets the required standards.
+
+## Docs Agent
+
+The `DocsAgent` is responsible for keeping the project documentation in sync with the codebase. It is triggered by GitHub Actions or can be run manually.
+
+### Responsibilities
+- Monitoring code changes in the repository.
+- Identifying which documentation files are affected by those changes.
+- Updating the documentation to reflect the new state of the code.
+- Ensuring consistency across all documentation pages.
+
+### Skills
+The Docs Agent uses the **Docs Maintenance** skill, which provides a structured workflow for inspecting changes and applying updates to the `/docs/` directory. It uses filesystem tools to read code and edit documentation files.
+
+### Running the Docs Agent
+
+The agent can be run manually using the provided script:
+
+```bash
+python scripts/run_docs_agent.py
+```
+
+This will analyze the changes in the repository and update the files in the `/docs/` directory accordingly.
