@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anti-pilot Docs</title>
+    <meta
+      name="description"
+      content="Architecture, MCP, Deep Agent, and testing docs for Anti-pilot."
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css"
+    />
+    <style>
+      :root {
+        --theme-color: #1f6feb;
+      }
+
+      .sidebar > h1 a {
+        font-size: 1.1rem;
+        font-weight: 700;
+      }
+
+      .markdown-section {
+        max-width: 900px;
+      }
+
+      .app-name-link img {
+        max-width: 40px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">Loading docs...</div>
+    <script>
+      window.$docsify = {
+        name: "Anti-pilot Docs",
+        repo: "",
+        homepage: "README.md",
+        loadSidebar: true,
+        subMaxLevel: 2,
+        auto2top: true,
+        relativePath: true,
+        search: {
+          noData: "No matching docs found.",
+          placeholder: "Search docs",
+        },
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify/lib/plugins/search.min.js"></script>
+  </body>
+</html>

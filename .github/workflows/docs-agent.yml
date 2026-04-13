@@ -1,0 +1,55 @@
+name: Docs Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Git ref used to compute changed files"
+        required: true
+        default: "origin/main"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      DOCS_AGENT_MODEL: ${{ secrets.DOCS_AGENT_MODEL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run docs agent
+        run: python scripts/run_docs_agent.py "${{ inputs.base_ref }}"
+
+      - name: Create docs PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: docs-agent/update-docs
+          commit-message: "docs: update generated docs"
+          title: "docs: update generated docs"
+          body: |
+            Automated documentation updates generated from current code changes.
+
+            This PR was created by the docs agent workflow.
+          add-paths: |
+            docs/**
