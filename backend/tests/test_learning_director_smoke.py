@@ -124,7 +124,7 @@ async def main() -> None:
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     print("Starting learning director smoke test")
-    print("Make sure the MCP server is running at http://localhost:8000/mcp")
+    print("Make sure the MCP server is running at http://localhost:8001/mcp")
     print(f"Using fake user_id: {user_id}")
 
     try:
