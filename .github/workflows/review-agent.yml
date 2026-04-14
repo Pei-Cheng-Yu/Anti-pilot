@@ -1,0 +1,66 @@
+name: Review Agent
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Git ref used to compute changed files"
+        required: true
+        default: "origin/main"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      REVIEW_AGENT_MODEL: ${{ vars.REVIEW_AGENT_MODEL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run review agent
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.event.inputs.base_ref }}
+        run: |
+          if [ -z "$BASE_REF" ]; then
+            BASE_REF="origin/main"
+          fi
+          python scripts/run_review_agent.py "$BASE_REF"
+
+      - name: Comment review on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'review-agent-summary.md';
+            let body = 'Review agent did not produce output.';
+            if (fs.existsSync(path)) {
+              body = fs.readFileSync(path, 'utf8');
+            }
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
