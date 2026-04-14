@@ -19,7 +19,7 @@ load_dotenv()
 _planner = build_planner_graph()
 
 # MCP server URL where app/mcp/server.py is running.
-MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000/mcp")
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp")
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
 

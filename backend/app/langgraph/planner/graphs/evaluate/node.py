@@ -70,7 +70,7 @@ def skillpath_review_worker(state: PlannerState):
 
     llm = get_gemini()
     response = llm.with_structured_output(SkillPathRevisionResponse).invoke(prompt)
-    return {"skillpath_revision": [response]}
+    return {"skillpath_revisions": [response]}
 
 
 def merge_revised_skillpaths(state: PlannerState):
