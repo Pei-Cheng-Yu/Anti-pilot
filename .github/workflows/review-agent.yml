@@ -10,7 +10,9 @@ on:
         description: "Git ref used to compute changed files"
         required: true
         default: "origin/main"
-
+  push:
+    branches:
+      - review-agent
 permissions:
   contents: read
   pull-requests: write
