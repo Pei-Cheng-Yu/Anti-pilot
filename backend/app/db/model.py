@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, MetaData, String, Text, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, MetaData, String, Text, func
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 naming_convention = {
@@ -133,5 +133,27 @@ class SkillPathModel(Base):
     affected_downstream_ids: Mapped[list[str]] = mapped_column(
         ARRAY(Text), default=list
     )
+    practice_mode: Mapped[str | None] = mapped_column(String, nullable=True)
 
     milestone: Mapped["MilestoneModel"] = relationship(back_populates="skillpaths")
+    learning_contents: Mapped[list["LearningContentModel"]] = relationship(
+        back_populates="skillpath", cascade="all, delete-orphan"
+    )
+
+
+class LearningContentModel(Base):
+    __tablename__ = "learning_contents"
+
+    content_id: Mapped[str] = mapped_column(String, primary_key=True)
+    skillpath_id: Mapped[str] = mapped_column(
+        String, ForeignKey("skillpaths.skillpath_id")
+    )
+    content_type: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(Text)
+    order_index: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSONB)
+
+    skillpath: Mapped["SkillPathModel"] = relationship(
+        back_populates="learning_contents"
+    )
