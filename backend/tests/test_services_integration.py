@@ -6,13 +6,22 @@ from app.core.config import settings
 from app.db.model import (
     Base,
     GoalModel,
+    LearningContentModel,
     LearningProfileModel,
     MilestoneModel,
     RoadmapModel,
     SkillPathModel,
     UserModel,
 )
-from app.schema.entities import GoalSpec, LearningProfile, MilestoneItem, SkillPathItem
+from app.schema.entities import (
+    ArticleLearningContent,
+    GoalSpec,
+    LearningProfile,
+    MilestoneItem,
+    SkillPathItem,
+    SourceLink,
+)
+from app.schema.enums import LearningContentType, PracticeMode
 from app.services import goal as goal_service
 from app.services import learning_profile as learning_profile_service
 from app.services import roadmap as roadmap_service
@@ -68,6 +77,24 @@ def make_skillpath(milestone_id: str) -> SkillPathItem:
         status="ready",
         need_generation=True,
         need_modification=False,
+        practice_mode=None,
+    )
+
+
+def make_article_content(skillpath_id: str) -> ArticleLearningContent:
+    return ArticleLearningContent(
+        content_id=f"content-{uuid4().hex[:8]}",
+        skillpath_id=skillpath_id,
+        title="HTTP request basics",
+        description="A short article introducing HTTP requests.",
+        skill_intro="HTTP is the shared language between clients and APIs.",
+        reading_content="A request has a method, URL, headers, and optional body.",
+        references=[
+            SourceLink(
+                title="MDN HTTP overview",
+                url="https://developer.mozilla.org/en-US/docs/Web/HTTP/Overview",
+            )
+        ],
     )
 
 
@@ -122,6 +149,21 @@ async def test_user():
                     ).scalars()
                 )
                 if milestone_ids:
+                    skillpath_ids = list(
+                        (
+                            await cleanup_session.execute(
+                                select(SkillPathModel.skillpath_id).where(
+                                    SkillPathModel.milestone_id.in_(milestone_ids)
+                                )
+                            )
+                        ).scalars()
+                    )
+                    if skillpath_ids:
+                        await cleanup_session.execute(
+                            delete(LearningContentModel).where(
+                                LearningContentModel.skillpath_id.in_(skillpath_ids)
+                            )
+                        )
                     await cleanup_session.execute(
                         delete(SkillPathModel).where(
                             SkillPathModel.milestone_id.in_(milestone_ids)
@@ -212,13 +254,64 @@ async def test_roadmap_service_roundtrip_and_scoping(db_session, test_user: str)
         skillpath.skillpath_id,
         db_session,
         estimated_hours=2.0,
+        practice_mode=PracticeMode.CODING_PROBLEM.value,
     )
     reloaded = await roadmap_service.get_roadmap_full(test_user, roadmap_id, db_session)
 
     assert "async patterns" in updated_milestone.objective
     assert updated_skillpath.estimated_hours == 2.0
+    assert updated_skillpath.practice_mode == PracticeMode.CODING_PROBLEM
     assert "async patterns" in reloaded.milestones[0].objective
     assert reloaded.milestones[0].skillpaths[0].estimated_hours == 2.0
+    assert (
+        reloaded.milestones[0].skillpaths[0].practice_mode
+        == PracticeMode.CODING_PROBLEM
+    )
 
     with pytest.raises(ValueError, match="not found for user"):
         await roadmap_service.get_roadmap_full("other-user", roadmap_id, db_session)
+
+
+@pytest.mark.asyncio
+async def test_roadmap_service_persists_generated_learning_contents(
+    db_session, test_user: str
+):
+    roadmap_id = f"roadmap-{uuid4()}"
+    milestone = make_milestone(roadmap_id)
+    skillpath = make_skillpath(milestone.milestone_id)
+
+    await roadmap_service.save_roadmap(
+        user_id=test_user,
+        roadmap_id=roadmap_id,
+        version=1,
+        summary="FastAPI learning roadmap",
+        target_outcome="Build a production-style FastAPI project.",
+        assumptions=[],
+        milestones=[milestone],
+        skillpaths=[skillpath],
+        session=db_session,
+    )
+
+    generated_skillpath = skillpath.model_copy(
+        update={
+            "status": "generated",
+            "need_generation": False,
+            "learning_contents": [make_article_content(skillpath.skillpath_id)],
+        }
+    )
+
+    saved_skillpaths = await roadmap_service.save_generated_skillpaths(
+        test_user, [generated_skillpath], db_session
+    )
+    loaded = await roadmap_service.get_roadmap_full(test_user, roadmap_id, db_session)
+    loaded_skillpath = loaded.milestones[0].skillpaths[0]
+
+    assert saved_skillpaths[0].need_generation is False
+    assert loaded_skillpath.status == "generated"
+    assert loaded_skillpath.need_generation is False
+    assert len(loaded_skillpath.learning_contents) == 1
+    assert (
+        loaded_skillpath.learning_contents[0].content_type
+        == LearningContentType.ARTICLE
+    )
+    assert loaded_skillpath.learning_contents[0].title == "HTTP request basics"

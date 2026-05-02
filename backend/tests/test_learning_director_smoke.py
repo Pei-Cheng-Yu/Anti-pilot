@@ -7,14 +7,23 @@ from app.core.config import settings
 from app.db.model import (
     Base,
     GoalModel,
+    LearningContentModel,
     LearningProfileModel,
     MilestoneModel,
     RoadmapModel,
     SkillPathModel,
     UserModel,
 )
-from app.langgraph.learning_director.agent import create_learning_director
-from app.schema.entities import GoalSpec, LearningProfile
+from app.langgraph.learning_director import agent as learning_director_agent
+from app.schema.entities import (
+    ArticleLearningContent,
+    CodingProblemLearningContent,
+    GoalSpec,
+    LearningProfile,
+    MultipleChoiceLearningContent,
+    MultipleChoiceOption,
+)
+from app.schema.enums import PracticeMode
 from app.services import goal as goal_service
 from app.services import learning_profile as learning_profile_service
 from app.services import roadmap as roadmap_service
@@ -25,6 +34,61 @@ from sqlalchemy.pool import NullPool
 
 # Load environment variables so model and DB config behave the same as other tests.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
+
+class FakeContentGenerationGraph:
+    def invoke(self, state: dict) -> dict:
+        generated_skillpaths = []
+        for skillpath in state["skillpaths"]:
+            article = ArticleLearningContent(
+                content_id=f"article-{skillpath.skillpath_id}",
+                skillpath_id=skillpath.skillpath_id,
+                title=f"{skillpath.title} article",
+                description=f"Generated article for {skillpath.title}.",
+                skill_intro=f"Why {skillpath.title} matters in this roadmap.",
+                reading_content=f"Core explanation for {skillpath.title}.",
+            )
+            assessment = self._make_assessment(skillpath)
+            generated_skillpaths.append(
+                skillpath.model_copy(
+                    update={
+                        "status": "generated",
+                        "need_generation": False,
+                        "learning_contents": [article, assessment],
+                    }
+                )
+            )
+
+        return {"generated_skillpaths": generated_skillpaths}
+
+    def _make_assessment(self, skillpath):
+        if skillpath.practice_mode == PracticeMode.CODING_PROBLEM:
+            return CodingProblemLearningContent(
+                content_id=f"coding-{skillpath.skillpath_id}",
+                skillpath_id=skillpath.skillpath_id,
+                title=f"{skillpath.title} practice",
+                description=f"Generated coding practice for {skillpath.title}.",
+                prompt=f"Implement a small exercise for {skillpath.title}.",
+                difficulty="easy",
+                starter_code=None,
+                expected_output=None,
+                hints=["Start with the smallest working case."],
+            )
+
+        return MultipleChoiceLearningContent(
+            content_id=f"quiz-{skillpath.skillpath_id}",
+            skillpath_id=skillpath.skillpath_id,
+            title=f"{skillpath.title} check",
+            description=f"Generated concept check for {skillpath.title}.",
+            question=f"What is the key idea in {skillpath.title}?",
+            options=[
+                MultipleChoiceOption(option_id="A", text="A distractor"),
+                MultipleChoiceOption(option_id="B", text="The core concept"),
+                MultipleChoiceOption(option_id="C", text="Another distractor"),
+            ],
+            correct_option_id="B",
+            explanation="B matches the generated skillpath objective.",
+        )
 
 
 def make_goal() -> GoalSpec:
@@ -99,6 +163,21 @@ async def cleanup_user(session_factory: async_sessionmaker, user_id: str) -> Non
                 ).scalars()
             )
             if milestone_ids:
+                skillpath_ids = list(
+                    (
+                        await session.execute(
+                            select(SkillPathModel.skillpath_id).where(
+                                SkillPathModel.milestone_id.in_(milestone_ids)
+                            )
+                        )
+                    ).scalars()
+                )
+                if skillpath_ids:
+                    await session.execute(
+                        delete(LearningContentModel).where(
+                            LearningContentModel.skillpath_id.in_(skillpath_ids)
+                        )
+                    )
                 await session.execute(
                     delete(SkillPathModel).where(
                         SkillPathModel.milestone_id.in_(milestone_ids)
@@ -126,6 +205,7 @@ async def main() -> None:
     print("Starting learning director smoke test")
     print("Make sure the MCP server is running at http://localhost:8001/mcp")
     print(f"Using fake user_id: {user_id}")
+    print("Using fake content graph for deterministic content-generation persistence.")
 
     try:
         async with engine.begin() as conn:
@@ -137,7 +217,8 @@ async def main() -> None:
                 user_id, make_profile(), session
             )
 
-        agent = await create_learning_director()
+        learning_director_agent._content_generator = FakeContentGenerationGraph()
+        agent = await learning_director_agent.create_learning_director()
         result = await agent.ainvoke(
             {
                 "messages": [
@@ -146,7 +227,8 @@ async def main() -> None:
                         "content": (
                             "My learning goal and learning profile are already saved in the system. "
                             "Please load them with your tools, create my learning roadmap, review it, "
-                            "fix any real issues, and tell me when it is ready."
+                            "fix any real issues, generate learning content for every skillpath, "
+                            "save that content to the database, and tell me when it is ready."
                         ),
                     }
                 ]
@@ -178,13 +260,36 @@ async def main() -> None:
 
         total_skillpaths = sum(len(m.skillpaths) for m in roadmap.milestones)
         total_hours = sum(m.estimated_hours for m in roadmap.milestones)
+        skillpaths_with_content = sum(
+            1
+            for milestone in roadmap.milestones
+            for skillpath in milestone.skillpaths
+            if skillpath.learning_contents
+        )
+        total_learning_contents = sum(
+            len(skillpath.learning_contents)
+            for milestone in roadmap.milestones
+            for skillpath in milestone.skillpaths
+        )
+
+        if total_skillpaths == 0:
+            raise AssertionError("Roadmap was created without skillpaths.")
+        if skillpaths_with_content != total_skillpaths:
+            raise AssertionError(
+                "Learning director did not generate and persist content for every skillpath. "
+                f"Expected {total_skillpaths}, got {skillpaths_with_content}."
+            )
 
         print("\n=== ROADMAP CHECK ===")
         print(f"roadmap_id: {roadmap.roadmap_id}")
         print(f"milestones: {len(roadmap.milestones)}")
         print(f"skillpaths: {total_skillpaths}")
         print(f"milestone_hours: {total_hours}")
-        print("Smoke test passed: roadmap was created and loaded successfully.")
+        print(f"skillpaths_with_content: {skillpaths_with_content}")
+        print(f"learning_content_items: {total_learning_contents}")
+        print(
+            "Smoke test passed: roadmap and generated learning content were persisted."
+        )
     finally:
         await cleanup_user(session_factory, user_id)
         await engine.dispose()
