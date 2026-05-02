@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -201,11 +202,17 @@ async def main() -> None:
     user_id = f"learning-director-smoke-{uuid4()}"
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    use_real_content_graph = os.getenv("LEARNING_DIRECTOR_SMOKE_REAL_CONTENT") == "1"
 
     print("Starting learning director smoke test")
     print("Make sure the MCP server is running at http://localhost:8001/mcp")
     print(f"Using fake user_id: {user_id}")
-    print("Using fake content graph for deterministic content-generation persistence.")
+    if use_real_content_graph:
+        print("Using real content graph and real ADK content generator.")
+    else:
+        print(
+            "Using fake content graph for deterministic content-generation persistence."
+        )
 
     try:
         async with engine.begin() as conn:
@@ -217,7 +224,8 @@ async def main() -> None:
                 user_id, make_profile(), session
             )
 
-        learning_director_agent._content_generator = FakeContentGenerationGraph()
+        if not use_real_content_graph:
+            learning_director_agent._content_generator = FakeContentGenerationGraph()
         agent = await learning_director_agent.create_learning_director()
         result = await agent.ainvoke(
             {
