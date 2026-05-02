@@ -1,5 +1,6 @@
 from app.db.session import get_session
 from app.schema.entities import MilestoneItem, RoadmapFull, SkillPathItem
+from app.schema.enums import PracticeMode
 from app.services import roadmap as service
 from fastmcp import FastMCP
 
@@ -59,10 +60,13 @@ async def update_skillpath(
     need_modification: bool | None = None,
     revision_reason: str | None = None,
     need_generation: bool | None = None,
+    practice_mode: PracticeMode | None = None,
 ) -> SkillPathItem:
     """
     Patch one or more fields on a user's skillpath directly in DB.
     Use this during review to fix issues without rerunning the planner.
+    You can also set optional post-planning content guidance such as practice_mode
+    for later content generation.
     Only pass the fields you want to change.
     """
     fields = {
@@ -74,6 +78,7 @@ async def update_skillpath(
             "need_modification": need_modification,
             "revision_reason": revision_reason,
             "need_generation": need_generation,
+            "practice_mode": practice_mode.value if practice_mode else None,
         }.items()
         if v is not None
     }
