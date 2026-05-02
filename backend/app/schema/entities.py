@@ -1,6 +1,12 @@
 from datetime import date
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
+from app.schema.enums import (
+    ArticleDepth,
+    ExampleStyle,
+    LearningContentType,
+    PracticeMode,
+)
 from pydantic import BaseModel, Field
 
 
@@ -57,6 +63,148 @@ class LearningProfile(BaseModel):
     )
 
 
+class SourceLink(BaseModel):
+    title: str = Field(..., description="Human-readable title of the source.")
+    url: str = Field(..., description="Reference URL for the source material.")
+
+
+class ContentSourceNote(BaseModel):
+    source: SourceLink
+    note: str = Field(
+        ...,
+        description="Short note summarizing what was useful from this source for the generated learning content.",
+    )
+
+
+class MultipleChoiceOption(BaseModel):
+    option_id: str = Field(..., description="Stable option identifier, such as A.")
+    text: str = Field(..., description="The option text shown to the learner.")
+
+
+class BaseLearningContent(BaseModel):
+    content_id: str = Field(..., description="Unique identifier for this content item.")
+    skillpath_id: str = Field(
+        ..., description="Parent skill path that this learning content belongs to."
+    )
+    title: str = Field(..., description="Short title of this learning content item.")
+    description: str = Field(
+        ...,
+        description="Brief description of why this content item exists and what it helps the learner practice or understand.",
+    )
+
+
+class ArticleLearningContent(BaseLearningContent):
+    content_type: Literal[LearningContentType.ARTICLE] = LearningContentType.ARTICLE
+    skill_intro: str = Field(
+        ...,
+        description="Short introduction that frames the skill for the learner before the main reading section.",
+    )
+    reading_content: str = Field(
+        ...,
+        description="Main article content that teaches the skill path concept in a concise, learner-friendly way.",
+    )
+    references: list[SourceLink] = Field(
+        default_factory=list,
+        description="Reference links used to ground or support the article.",
+    )
+    source_notes: list[ContentSourceNote] = Field(
+        default_factory=list,
+        description="Optional notes captured during source research for this article.",
+    )
+
+
+class CodingProblemLearningContent(BaseLearningContent):
+    content_type: Literal[LearningContentType.CODING_PROBLEM] = (
+        LearningContentType.CODING_PROBLEM
+    )
+    prompt: str = Field(
+        ...,
+        description="Coding challenge prompt for the learner to implement or debug.",
+    )
+    difficulty: Literal["easy", "medium", "hard"] = Field(
+        ...,
+        description="Relative difficulty of the coding exercise for this learner and roadmap stage.",
+    )
+    starter_code: Optional[str] = Field(
+        default=None,
+        description="Optional starter code provided to reduce setup friction.",
+    )
+    expected_output: Optional[str] = Field(
+        default=None,
+        description="Optional target output or behavior for the coding task.",
+    )
+    hints: list[str] = Field(
+        default_factory=list,
+        description="Optional hints the learner can use if they get stuck.",
+    )
+
+
+class MultipleChoiceLearningContent(BaseLearningContent):
+    content_type: Literal[LearningContentType.MULTIPLE_CHOICE] = (
+        LearningContentType.MULTIPLE_CHOICE
+    )
+    question: str = Field(..., description="Multiple-choice question prompt.")
+    options: list[MultipleChoiceOption] = Field(
+        default_factory=list,
+        description="Available answer choices for this question.",
+    )
+    correct_option_id: str = Field(
+        ...,
+        description="Identifier of the correct answer option.",
+    )
+    explanation: str = Field(
+        ...,
+        description="Short explanation of why the correct answer is right.",
+    )
+
+
+LearningContentItem = Annotated[
+    ArticleLearningContent
+    | CodingProblemLearningContent
+    | MultipleChoiceLearningContent,
+    Field(discriminator="content_type"),
+]
+
+
+class ContentGenerationPlan(BaseModel):
+    article_depth: Optional[ArticleDepth] = Field(
+        default=None,
+        description="Optional run-level article depth override. When omitted, the content-generation agent should infer the appropriate depth from the learner profile and roadmap context.",
+    )
+    example_style: ExampleStyle = Field(
+        ...,
+        description="Whether generated articles should be minimal with examples, balanced, or explicitly example-first.",
+    )
+    include_recap: bool = Field(
+        ...,
+        description="Whether generated learning content should include recap-oriented reinforcement.",
+    )
+
+
+class MilestoneRecap(BaseModel):
+    recap_id: str = Field(
+        ..., description="Unique identifier for this milestone recap."
+    )
+    milestone_id: str = Field(..., description="Milestone this recap belongs to.")
+    title: str = Field(..., description="Short learner-facing title for the recap.")
+    summary: str = Field(
+        ...,
+        description="Concise recap summary that consolidates what the learner should retain before moving on.",
+    )
+    key_points: list[str] = Field(
+        default_factory=list,
+        description="Key concepts or takeaways the learner should retain.",
+    )
+    readiness_checks: list[str] = Field(
+        default_factory=list,
+        description="Short self-check prompts that help the learner judge whether they are ready for the next milestone.",
+    )
+    related_skillpath_ids: list[str] = Field(
+        default_factory=list,
+        description="Skillpaths within the milestone that this recap summarizes.",
+    )
+
+
 class SkillPathItem(BaseModel):
     skillpath_id: str = Field(
         ..., description="Unique identifier for this skill path unit."
@@ -103,6 +251,14 @@ class SkillPathItem(BaseModel):
     affected_downstream_ids: list[str] = Field(
         default_factory=list,
         description="IDs of downstream skill paths that may also be affected if this skill path is revised.",
+    )
+    practice_mode: Optional[PracticeMode] = Field(
+        default=None,
+        description="Optional post-planning guidance set during roadmap review to indicate whether this skill path should use a coding problem, a multiple-choice check, or either as its main assessment mode.",
+    )
+    learning_contents: list[LearningContentItem] = Field(
+        default_factory=list,
+        description="Generated learning content items attached to this skill path, such as article, coding problem, or quiz content.",
     )
 
 
@@ -183,6 +339,10 @@ class MilestoneWithSkillPaths(BaseModel):
     skillpaths: list[SkillPathItem] = Field(
         default_factory=list,
         description="Skillpaths nested under this milestone, ordered by prerequisites.",
+    )
+    recaps: list[MilestoneRecap] = Field(
+        default_factory=list,
+        description="Optional recap units generated after milestone-level content is complete.",
     )
 
 
