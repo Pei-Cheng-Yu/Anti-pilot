@@ -1,0 +1,17 @@
+name: add-live-graph-memory-smoke-and-trace-guards
+schema: spec-driven
+artifacts:
+  proposal:
+    path: proposal.md
+  design:
+    path: design.md
+    depends_on:
+      - proposal
+  tasks:
+    path: tasks.md
+    depends_on:
+      - proposal
+      - design
+apply:
+  requires:
+    - tasks
