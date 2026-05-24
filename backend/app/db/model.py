@@ -1,5 +1,6 @@
 from datetime import date, datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Date,
     DateTime,
@@ -9,6 +10,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -40,6 +42,15 @@ class UserModel(Base):
         back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
     roadmaps: Mapped[list["RoadmapModel"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    coding_problem_attempts: Mapped[list["CodingProblemAttemptModel"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    skill_mastery_states: Mapped[list["SkillMasteryStateModel"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    learner_memory_notes: Mapped[list["LearnerMemoryNoteModel"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -188,3 +199,74 @@ class ReviewConceptModel(Base):
     lapses: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CodingProblemAttemptModel(Base):
+    __tablename__ = "coding_problem_attempts"
+
+    attempt_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.user_id"))
+    skillpath_id: Mapped[str] = mapped_column(
+        String, ForeignKey("skillpaths.skillpath_id")
+    )
+    content_id: Mapped[str] = mapped_column(String)
+    submitted_code: Mapped[str] = mapped_column(Text)
+    language: Mapped[str] = mapped_column(String)
+    correctness: Mapped[str] = mapped_column(String)
+    feedback_summary: Mapped[str] = mapped_column(Text)
+    detected_concepts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    detected_mistakes: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    compile_error: Mapped[str | None] = mapped_column(Text)
+    runtime_error: Mapped[str | None] = mapped_column(Text)
+    score: Mapped[float | None] = mapped_column(Float)
+    test_results: Mapped[list[dict]] = mapped_column(JSONB, default=list)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["UserModel"] = relationship(back_populates="coding_problem_attempts")
+
+
+class SkillMasteryStateModel(Base):
+    __tablename__ = "skill_mastery_states"
+    __table_args__ = (UniqueConstraint("user_id", "skillpath_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.user_id"))
+    skillpath_id: Mapped[str] = mapped_column(
+        String, ForeignKey("skillpaths.skillpath_id")
+    )
+    status: Mapped[str] = mapped_column(String)
+    mastery_score: Mapped[float] = mapped_column(Float, default=0.0)
+    successful_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    strong_concepts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    weak_concepts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped["UserModel"] = relationship(back_populates="skill_mastery_states")
+
+
+class LearnerMemoryNoteModel(Base):
+    __tablename__ = "learner_memory_notes"
+
+    memory_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.user_id"))
+    memory_type: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(String)
+    summary: Mapped[str] = mapped_column(Text)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    linked_concepts: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    linked_skillpath_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    linked_content_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    evidence_attempt_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(3072))
+    search_text: Mapped[str] = mapped_column(Text, default="")
+    salience_score: Mapped[float] = mapped_column(Float, default=0.5)
+    status: Mapped[str] = mapped_column(String, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    user: Mapped["UserModel"] = relationship(back_populates="learner_memory_notes")

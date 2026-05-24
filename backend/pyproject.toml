@@ -2,3 +2,6 @@
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "live_llm: live LLM/ADK smoke tests gated by RUN_LIVE_AGENT_MEMORY_TESTS and API credentials",
+]
