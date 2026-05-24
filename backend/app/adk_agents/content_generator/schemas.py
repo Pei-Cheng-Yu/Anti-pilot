@@ -1,6 +1,7 @@
 from app.schema.entities import (
     ContentGenerationPlan,
     GoalSpec,
+    LearningMemoryContext,
     LearningProfile,
     MilestoneItem,
     SkillPathItem,
@@ -24,6 +25,10 @@ class AdkContentGenerationRequest(BaseModel):
     content_plan: ContentGenerationPlan = Field(
         ...,
         description="Run-level content-generation policy derived before worker fanout.",
+    )
+    learning_memory_context: LearningMemoryContext | None = Field(
+        default=None,
+        description="Optional learner memory context used to personalize content.",
     )
 
 

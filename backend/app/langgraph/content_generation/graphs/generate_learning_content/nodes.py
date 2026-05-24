@@ -1,14 +1,27 @@
+import asyncio
+
 from app.adk_agents.content_generator import generate_skillpath_content
 from app.adk_agents.content_generator.schemas import (
     AdkContentGenerationOutput,
     AdkContentGenerationRequest,
 )
+from app.db.session import get_session
 from app.langgraph.content_generation.graphs.generate_learning_content.utils import (
     apply_content_drafts,
 )
-from app.langgraph.content_generation.schema.state import ContentGenerationState
-from app.schema.entities import ContentGenerationPlan, MilestoneItem, SkillPathItem
+from app.langgraph.content_generation.schema.state import (
+    ContentGenerationState,
+    LearningMemoryRetrievalDiagnostic,
+)
+from app.schema.entities import (
+    ContentGenerationPlan,
+    LearningMemoryContext,
+    MilestoneItem,
+    RetrieveLearningMemoryInput,
+    SkillPathItem,
+)
 from app.schema.enums import ExampleStyle, PracticeMode
+from app.services import learning_memory
 from langgraph.graph import END
 from langgraph.types import Send
 
@@ -79,6 +92,7 @@ def route_content_workers(state: ContentGenerationState):
                     "content_worker",
                     {
                         "goal_spec": goal_spec,
+                        "user_id": state.get("user_id"),
                         "learning_profile": learning_profile,
                         "milestone": milestone,
                         "skillpath": skillpath,
@@ -93,7 +107,93 @@ def route_content_workers(state: ContentGenerationState):
     return tasks or END
 
 
+def _retrieve_learning_memory_context(
+    *,
+    user_id: str | None,
+    skillpath: SkillPathItem,
+) -> LearningMemoryContext | None:
+    if not user_id:
+        return None
+
+    async def _retrieve() -> LearningMemoryContext:
+        async with get_session() as session:
+            return await learning_memory.retrieve_learning_memory(
+                RetrieveLearningMemoryInput(
+                    user_id=user_id,
+                    query_text="\n".join(
+                        [
+                            skillpath.title,
+                            skillpath.description,
+                            " ".join(skillpath.learning_objectives),
+                        ]
+                    ),
+                    skillpath_id=skillpath.skillpath_id,
+                    concept_keys=skillpath.learning_objectives,
+                ),
+                session,
+            )
+
+    return asyncio.run(_retrieve())
+
+
+def _build_learning_memory_retrieval_diagnostic(
+    *,
+    user_id: str | None,
+    skillpath_id: str,
+    context: LearningMemoryContext | None = None,
+    error: Exception | None = None,
+) -> LearningMemoryRetrievalDiagnostic:
+    if error is not None:
+        return LearningMemoryRetrievalDiagnostic(
+            skillpath_id=skillpath_id,
+            status="failed",
+            user_id_present=bool(user_id),
+            error_summary=f"{type(error).__name__}: {error}",
+        )
+
+    if not user_id:
+        return LearningMemoryRetrievalDiagnostic(
+            skillpath_id=skillpath_id,
+            status="skipped_no_user_id",
+            user_id_present=False,
+        )
+
+    if context is None:
+        return LearningMemoryRetrievalDiagnostic(
+            skillpath_id=skillpath_id,
+            status="retrieved_empty",
+            user_id_present=True,
+        )
+
+    active_error_pattern_count = len(context.active_error_patterns)
+    teaching_heuristic_count = len(context.teaching_heuristics)
+    recent_attempt_count = len(context.recent_attempts)
+    relevant_note_count = len(context.relevant_notes)
+    has_memory = any(
+        [
+            context.mastery_state is not None,
+            active_error_pattern_count,
+            teaching_heuristic_count,
+            recent_attempt_count,
+            relevant_note_count,
+            len(context.mastery_signals),
+            len(context.background_notes),
+        ]
+    )
+
+    return LearningMemoryRetrievalDiagnostic(
+        skillpath_id=skillpath_id,
+        status="retrieved" if has_memory else "retrieved_empty",
+        user_id_present=True,
+        active_error_pattern_count=active_error_pattern_count,
+        teaching_heuristic_count=teaching_heuristic_count,
+        recent_attempt_count=recent_attempt_count,
+        relevant_note_count=relevant_note_count,
+    )
+
+
 def content_worker(state: ContentGenerationState):
+    user_id = state.get("user_id")
     goal_spec = state.get("goal_spec")
     learning_profile = state.get("learning_profile")
     milestone: MilestoneItem | None = state.get("milestone")
@@ -114,6 +214,23 @@ def content_worker(state: ContentGenerationState):
     ):
         return {}
 
+    retrieval_error: Exception | None = None
+    try:
+        learning_memory_context = _retrieve_learning_memory_context(
+            user_id=user_id,
+            skillpath=skillpath,
+        )
+    except Exception as exc:
+        learning_memory_context = None
+        retrieval_error = exc
+
+    memory_diagnostic = _build_learning_memory_retrieval_diagnostic(
+        user_id=user_id,
+        skillpath_id=skillpath.skillpath_id,
+        context=learning_memory_context,
+        error=retrieval_error,
+    )
+
     request = AdkContentGenerationRequest(
         goal=goal_spec,
         profile=learning_profile,
@@ -122,10 +239,14 @@ def content_worker(state: ContentGenerationState):
             update={"practice_mode": selected_practice_mode}
         ),
         content_plan=content_plan,
+        learning_memory_context=learning_memory_context,
     )
     response: AdkContentGenerationOutput = generate_skillpath_content(request)
 
-    return {
+    update = {
+        "learning_memory_retrieval_diagnostics_by_skillpath": {
+            skillpath.skillpath_id: memory_diagnostic
+        },
         "content_drafts": [
             {
                 "skillpath_id": skillpath.skillpath_id,
@@ -141,8 +262,14 @@ def content_worker(state: ContentGenerationState):
                     else None
                 ),
             }
-        ]
+        ],
     }
+    if learning_memory_context is not None:
+        update["learning_memory_contexts_by_skillpath"] = {
+            skillpath.skillpath_id: learning_memory_context
+        }
+
+    return update
 
 
 def finalize_generated_content(state: ContentGenerationState):

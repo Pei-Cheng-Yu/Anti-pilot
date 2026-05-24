@@ -147,10 +147,29 @@ async def inject_user_id(
     """Inject runtime user_id into MCP tool calls that accept a user_id argument."""
     runtime = request.runtime
     user_id = runtime.context["user_id"]
-    managed_tool_prefixes = ("goal_", "learning_profile_", "roadmap_")
+    managed_tool_prefixes = (
+        "goal_",
+        "learning_profile_",
+        "roadmap_",
+        "learning_memory_",
+        "code_correction_",
+    )
 
     if request.name.startswith(managed_tool_prefixes):
-        modified_request = request.override(args={**request.args, "user_id": user_id})
+        args = dict(request.args)
+        if "user_id" in args:
+            modified_args = {**args, "user_id": user_id}
+        else:
+            modified_args = args
+            for nested_key in ("note", "attempt", "query", "request"):
+                nested_value = args.get(nested_key)
+                if isinstance(nested_value, dict):
+                    modified_args = {
+                        **args,
+                        nested_key: {**nested_value, "user_id": user_id},
+                    }
+                    break
+        modified_request = request.override(args=modified_args)
         return await handler(modified_request)
 
     return await handler(request)

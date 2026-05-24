@@ -36,7 +36,8 @@ Rules:
 - If practice_mode is `either`, choose the best fit, or include both when that creates a better learning progression.
 - Only include references that are actually grounded in sources you used.
 - Never invent URLs.
-- Return valid JSON only, with no markdown fences and no extra commentary.
+- Return output that matches the AdkContentGenerationOutput schema.
+- If the runtime asks for plain text, emit a single JSON object matching the schema with no markdown fences and no extra commentary.
 """
 
 
@@ -45,6 +46,13 @@ def build_content_generation_prompt(request: AdkContentGenerationRequest) -> str
         AdkContentGenerationOutput.model_json_schema(mode="validation"), indent=2
     )
     request_payload = request.model_dump_json(indent=2, exclude_none=True)
+    memory_context = ""
+    if request.learning_memory_context:
+        memory_context = (
+            "\n\nLearner memory context:\n"
+            + request.learning_memory_context.model_dump_json(indent=2)
+        )
+
     return f"""
 Generate grounded learning content for this request.
 
@@ -52,5 +60,5 @@ Output schema:
 {output_schema}
 
 Request payload:
-{request_payload}
+{request_payload}{memory_context}
 """.strip()
