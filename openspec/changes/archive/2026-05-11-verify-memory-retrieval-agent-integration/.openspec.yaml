@@ -1,0 +1,17 @@
+name: verify-memory-retrieval-agent-integration
+schema: spec-driven
+artifacts:
+  proposal:
+    path: proposal.md
+  design:
+    path: design.md
+    depends_on:
+      - proposal
+  tasks:
+    path: tasks.md
+    depends_on:
+      - proposal
+      - design
+apply:
+  requires:
+    - tasks

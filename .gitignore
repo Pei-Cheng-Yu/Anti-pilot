@@ -71,3 +71,18 @@ deploy.sh
 htmlcov/
 test_env/
 .claude/
+
+# Graphify team map: commit graphify-out/graph.json, graph.html, and GRAPH_REPORT.md.
+# These files are local-run artifacts.
+.graphify_analysis.json
+graphify-out/manifest.json
+graphify-out/cost.json
+
+# Optional: skip cache to keep the repo small.
+graphify-out/cache/
+
+# Ignore accidental nested Graphify outputs; the shared team map lives at repo root.
+backend/graphify-out/
+.codex/
+graphify-out/*
+.graphifyignore
