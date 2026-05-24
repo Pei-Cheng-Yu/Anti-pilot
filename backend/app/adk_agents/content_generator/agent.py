@@ -12,9 +12,21 @@ from app.adk_agents.content_generator.schemas import (
 )
 from google.genai import types
 
-CONTENT_GENERATOR_MODEL = os.getenv("CONTENT_GENERATOR_MODEL") or "gemini-2.5-flash"
+CONTENT_GENERATOR_MODEL = (
+    os.getenv("CONTENT_GENERATOR_MODEL") or "gemini-3.1-flash-lite-preview"
+)
 APP_NAME = "anti_pilot_content_generator"
 USER_ID = "content-generator"
+
+
+def _supports_adk_output_schema_with_tools(model: str) -> bool:
+    try:
+        from google.adk.utils.output_schema_utils import (
+            can_use_output_schema_with_tools,
+        )
+    except ImportError:
+        return False
+    return can_use_output_schema_with_tools(model)
 
 
 def _extract_json_payload(text: str) -> str:
@@ -30,6 +42,18 @@ def _extract_json_payload(text: str) -> str:
     return stripped[start : end + 1]
 
 
+def _coerce_content_generation_output(value) -> AdkContentGenerationOutput:
+    if isinstance(value, AdkContentGenerationOutput):
+        return value
+    if isinstance(value, dict):
+        return AdkContentGenerationOutput.model_validate(value)
+    if isinstance(value, str):
+        return AdkContentGenerationOutput.model_validate_json(
+            _extract_json_payload(value)
+        )
+    raise TypeError(f"Unsupported content generation output type: {type(value)!r}")
+
+
 def _build_agent():
     try:
         try:
@@ -43,12 +67,18 @@ def _build_agent():
             "google-adk is required for grounded content generation. Install the project's updated requirements before running the content-generation graph."
         ) from exc
 
-    return Agent(
-        name="content_generator",
-        model=CONTENT_GENERATOR_MODEL,
-        instruction=CONTENT_GENERATOR_INSTRUCTION,
-        tools=[google_search],
-    )
+    agent_kwargs = {
+        "name": "content_generator",
+        "model": CONTENT_GENERATOR_MODEL,
+        "instruction": CONTENT_GENERATOR_INSTRUCTION,
+        "tools": [google_search],
+    }
+    if _supports_adk_output_schema_with_tools(CONTENT_GENERATOR_MODEL):
+        agent_kwargs["output_schema"] = AdkContentGenerationOutput
+    # For non-Gemini-3 models, ADK output_schema with tools routes through a
+    # set_model_response workaround that cannot reliably parse this nested
+    # schema. Keep Search available and validate final JSON text with Pydantic.
+    return Agent(**agent_kwargs)
 
 
 async def agenerate_skillpath_content(
@@ -91,9 +121,7 @@ async def agenerate_skillpath_content(
     if not final_response_text:
         raise ValueError("ADK content generator returned no final response text.")
 
-    return AdkContentGenerationOutput.model_validate_json(
-        _extract_json_payload(final_response_text)
-    )
+    return _coerce_content_generation_output(final_response_text)
 
 
 def generate_skillpath_content(

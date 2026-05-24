@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from app.adk_agents.content_generator.schemas import AdkContentGenerationOutput
+from app.adk_agents.content_generator.prompts import build_content_generation_prompt
+from app.adk_agents.content_generator.schemas import (
+    AdkContentGenerationOutput,
+    AdkContentGenerationRequest,
+)
 from app.langgraph.content_generation.graphs.generate_learning_content.graph import (
     build_learning_content_graph,
 )
 from app.schema.entities import (
     ContentGenerationPlan,
     GoalSpec,
+    LearnerMemoryNote,
+    LearningMemoryContext,
     LearningProfile,
     MilestoneItem,
     SkillPathItem,
 )
-from app.schema.enums import ExampleStyle, LearningContentType, PracticeMode
+from app.schema.enums import ExampleStyle, LearningContentType, MemoryType, PracticeMode
 from dotenv import load_dotenv
 
 # Keep test environment behavior aligned with the other graph-level tests.
@@ -24,6 +30,8 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
 def _fake_generate_skillpath_content(request) -> AdkContentGenerationOutput:
+    # Deterministic marker output for non-live graph tests. If this text appears
+    # in LangSmith, the trace is from a fake/unit path, not real ADK generation.
     article = {
         "title": "Read the concept",
         "description": "Short article for the skill path.",
@@ -187,6 +195,217 @@ def test_learning_content_graph_generates_article_and_practice(monkeypatch):
     )
     assert (
         second.learning_contents[1].content_type == LearningContentType.CODING_PROBLEM
+    )
+
+
+def test_learning_content_graph_passes_memory_context_to_generator(monkeypatch):
+    captured_contexts = []
+
+    def fake_generate_with_memory(request):
+        captured_contexts.append(request.learning_memory_context)
+        return _fake_generate_skillpath_content(request)
+
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes.generate_skillpath_content",
+        fake_generate_with_memory,
+    )
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes._retrieve_learning_memory_context",
+        lambda *_args, **_kwargs: LearningMemoryContext(),
+        raising=False,
+    )
+
+    state = _make_state()
+    state["user_id"] = "user-1"
+
+    graph = build_learning_content_graph()
+    graph.invoke(state)
+
+    assert captured_contexts
+    assert all(context is not None for context in captured_contexts)
+
+
+def _make_memory_context() -> LearningMemoryContext:
+    return LearningMemoryContext(
+        active_error_patterns=[
+            LearnerMemoryNote(
+                memory_id="mem-fastapi-await",
+                user_id="user-1",
+                memory_type=MemoryType.ERROR_PATTERN,
+                title="FastAPI missing await pattern",
+                summary=(
+                    "Learner repeatedly forgets to await async database calls inside "
+                    "FastAPI route handlers."
+                ),
+                tags=["fastapi", "async", "await"],
+                linked_concepts=["fastapi.async", "missing await"],
+                linked_skillpath_ids=["sp-2"],
+                linked_content_ids=["cp-fastapi-await"],
+                evidence_attempt_ids=["attempt-1", "attempt-2"],
+                salience_score=0.9,
+                created_at=datetime.now(timezone.utc),
+            )
+        ],
+        teaching_heuristics=[
+            LearnerMemoryNote(
+                memory_id="mem-fastapi-await-heuristic",
+                user_id="user-1",
+                memory_type=MemoryType.HEURISTIC,
+                title="Pause on coroutine boundaries",
+                summary=(
+                    "When teaching FastAPI routes, ask the learner to identify every "
+                    "async call site before writing the return statement."
+                ),
+                tags=["fastapi", "async", "heuristic"],
+                linked_concepts=["fastapi.async"],
+                linked_skillpath_ids=["sp-2"],
+                evidence_attempt_ids=["attempt-1", "attempt-2"],
+                salience_score=0.8,
+                created_at=datetime.now(timezone.utc),
+            )
+        ],
+        relevant_notes=[],
+    )
+
+
+def test_learning_content_prompt_includes_seeded_memory_context(monkeypatch):
+    captured_requests: list[AdkContentGenerationRequest] = []
+    seeded_context = _make_memory_context()
+
+    def fake_generate_with_memory(request):
+        captured_requests.append(request)
+        return _fake_generate_skillpath_content(request)
+
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes.generate_skillpath_content",
+        fake_generate_with_memory,
+    )
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes._retrieve_learning_memory_context",
+        lambda *_args, **_kwargs: seeded_context,
+        raising=False,
+    )
+
+    state = _make_state()
+    state["user_id"] = "user-1"
+
+    graph = build_learning_content_graph()
+    result = graph.invoke(state)
+
+    request = next(
+        item for item in captured_requests if item.skillpath.skillpath_id == "sp-2"
+    )
+    contexts_by_skillpath = result["learning_memory_contexts_by_skillpath"]
+    state_context = contexts_by_skillpath["sp-2"]
+    diagnostics = result["learning_memory_retrieval_diagnostics_by_skillpath"]
+    diagnostic = diagnostics["sp-2"]
+    prompt = build_content_generation_prompt(request)
+
+    assert request.learning_memory_context is not None
+    assert request.learning_memory_context.active_error_patterns[0].memory_id == (
+        "mem-fastapi-await"
+    )
+    assert state_context.model_dump() == request.learning_memory_context.model_dump()
+    assert state_context.active_error_patterns[0].memory_id == "mem-fastapi-await"
+    assert diagnostic.status == "retrieved"
+    assert diagnostic.user_id_present is True
+    assert diagnostic.active_error_pattern_count == 1
+    assert diagnostic.teaching_heuristic_count == 1
+    assert "Learner memory context" in prompt
+    assert "FastAPI missing await pattern" in prompt
+    assert "await async database calls" in prompt
+
+
+def test_learning_content_graph_reports_skipped_memory_without_user(monkeypatch):
+    captured_requests: list[AdkContentGenerationRequest] = []
+
+    def fake_generate_with_memory(request):
+        captured_requests.append(request)
+        return _fake_generate_skillpath_content(request)
+
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes.generate_skillpath_content",
+        fake_generate_with_memory,
+    )
+
+    graph = build_learning_content_graph()
+    result = graph.invoke(_make_state())
+
+    assert captured_requests
+    assert all(request.learning_memory_context is None for request in captured_requests)
+    assert result.get("learning_memory_contexts_by_skillpath", {}) == {}
+    diagnostics = result["learning_memory_retrieval_diagnostics_by_skillpath"]
+    assert set(diagnostics) == {"sp-1", "sp-2"}
+    assert all(item.status == "skipped_no_user_id" for item in diagnostics.values())
+    assert all(item.user_id_present is False for item in diagnostics.values())
+
+
+def test_learning_content_graph_reports_empty_memory_context(monkeypatch):
+    captured_requests: list[AdkContentGenerationRequest] = []
+
+    def fake_generate_with_memory(request):
+        captured_requests.append(request)
+        return _fake_generate_skillpath_content(request)
+
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes.generate_skillpath_content",
+        fake_generate_with_memory,
+    )
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes._retrieve_learning_memory_context",
+        lambda *_args, **_kwargs: LearningMemoryContext(),
+        raising=False,
+    )
+
+    state = _make_state()
+    state["user_id"] = "user-1"
+
+    graph = build_learning_content_graph()
+    result = graph.invoke(state)
+
+    assert captured_requests
+    diagnostics = result["learning_memory_retrieval_diagnostics_by_skillpath"]
+    assert set(diagnostics) == {"sp-1", "sp-2"}
+    assert all(item.status == "retrieved_empty" for item in diagnostics.values())
+    assert all(item.user_id_present is True for item in diagnostics.values())
+    assert all(item.relevant_note_count == 0 for item in diagnostics.values())
+
+
+def test_learning_content_graph_reports_failed_memory_retrieval(monkeypatch):
+    captured_requests: list[AdkContentGenerationRequest] = []
+
+    def fake_generate_with_memory(request):
+        captured_requests.append(request)
+        return _fake_generate_skillpath_content(request)
+
+    def fail_retrieval(*_args, **_kwargs):
+        raise RuntimeError("memory database unavailable")
+
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes.generate_skillpath_content",
+        fake_generate_with_memory,
+    )
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes._retrieve_learning_memory_context",
+        fail_retrieval,
+        raising=False,
+    )
+
+    state = _make_state()
+    state["user_id"] = "user-1"
+
+    graph = build_learning_content_graph()
+    result = graph.invoke(state)
+
+    assert captured_requests
+    assert all(request.learning_memory_context is None for request in captured_requests)
+    diagnostics = result["learning_memory_retrieval_diagnostics_by_skillpath"]
+    assert set(diagnostics) == {"sp-1", "sp-2"}
+    assert all(item.status == "failed" for item in diagnostics.values())
+    assert all(item.user_id_present is True for item in diagnostics.values())
+    assert all(
+        "memory database unavailable" in (item.error_summary or "")
+        for item in diagnostics.values()
     )
 
 
