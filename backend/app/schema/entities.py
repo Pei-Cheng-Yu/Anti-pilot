@@ -1,10 +1,14 @@
-from datetime import date
-from typing import Annotated, Literal, Optional
+from datetime import date, datetime
+from typing import Annotated, Any, Literal, Optional
 
 from app.schema.enums import (
     ArticleDepth,
+    AttemptCorrectness,
     ExampleStyle,
     LearningContentType,
+    MasteryStatus,
+    MemoryStatus,
+    MemoryType,
     PracticeMode,
 )
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -384,3 +388,348 @@ class RoadmapFull(BaseModel):
         default_factory=list,
         description="All milestones with their skillpaths nested inside, ordered by order_index.",
     )
+
+
+class TestCaseResult(BaseModel):
+    name: str = Field(..., description="Short name or identifier for the test case.")
+    passed: bool = Field(..., description="Whether the test case passed.")
+    message: Optional[str] = Field(
+        default=None,
+        description="Optional short detail describing the observed result.",
+    )
+
+
+class CodingProblemAttempt(BaseModel):
+    attempt_id: str = Field(..., description="Unique identifier for this attempt.")
+    user_id: str = Field(..., description="Learner who submitted this attempt.")
+    skillpath_id: str = Field(..., description="Skillpath tied to this attempt.")
+    content_id: str = Field(..., description="Coding problem content identifier.")
+    submitted_code: str = Field(..., description="Learner-submitted code.")
+    language: str = Field(..., description="Programming language of the submission.")
+    correctness: AttemptCorrectness = Field(
+        ..., description="Overall correctness outcome for this attempt."
+    )
+    feedback_summary: str = Field(
+        ..., description="Short summary of the feedback given for the attempt."
+    )
+    detected_concepts: list[str] = Field(
+        default_factory=list,
+        description="Concepts the evaluator believes are relevant in this attempt.",
+    )
+    detected_mistakes: list[str] = Field(
+        default_factory=list,
+        description="Mistakes or failure patterns detected for this attempt.",
+    )
+    compile_error: Optional[str] = Field(
+        default=None, description="Optional compiler or syntax error message."
+    )
+    runtime_error: Optional[str] = Field(
+        default=None, description="Optional runtime error message."
+    )
+    score: Optional[float] = Field(
+        default=None,
+        description="Optional normalized score for this attempt, if available.",
+    )
+    test_results: list[TestCaseResult] = Field(
+        default_factory=list,
+        description="Structured test-case results for this attempt.",
+    )
+    submitted_at: datetime = Field(
+        ..., description="Timestamp when the attempt was recorded."
+    )
+
+
+class SkillMasteryState(BaseModel):
+    user_id: str = Field(..., description="Learner this mastery state belongs to.")
+    skillpath_id: str = Field(..., description="Tracked skillpath identifier.")
+    status: MasteryStatus = Field(
+        ..., description="Current mastery state for this skillpath."
+    )
+    mastery_score: float = Field(
+        default=0.0, description="Normalized mastery score for the skillpath."
+    )
+    successful_attempts: int = Field(
+        default=0, description="Number of successful attempts tied to this skillpath."
+    )
+    failed_attempts: int = Field(
+        default=0, description="Number of failed attempts tied to this skillpath."
+    )
+    strong_concepts: list[str] = Field(
+        default_factory=list,
+        description="Concepts the learner appears comfortable with in this skillpath.",
+    )
+    weak_concepts: list[str] = Field(
+        default_factory=list,
+        description="Concepts the learner still struggles with in this skillpath.",
+    )
+    last_attempt_at: Optional[datetime] = Field(
+        default=None, description="Timestamp of the most recent linked attempt."
+    )
+    last_updated_at: datetime = Field(
+        ..., description="Timestamp when this mastery state was last updated."
+    )
+
+
+class LearnerMemoryNote(BaseModel):
+    memory_id: str = Field(..., description="Unique identifier for this memory note.")
+    user_id: str = Field(..., description="Learner this memory note belongs to.")
+    memory_type: MemoryType = Field(..., description="Type of learning memory note.")
+    title: str = Field(..., description="Short human-readable memory title.")
+    summary: str = Field(..., description="Compact summary of the learner memory.")
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Free-form tags used for exact or keyword retrieval.",
+    )
+    linked_concepts: list[str] = Field(
+        default_factory=list,
+        description="Concept identifiers or labels tied to this memory.",
+    )
+    linked_skillpath_ids: list[str] = Field(
+        default_factory=list,
+        description="Skillpaths this memory is most relevant to.",
+    )
+    linked_content_ids: list[str] = Field(
+        default_factory=list,
+        description="Specific learning content items this memory relates to.",
+    )
+    evidence_attempt_ids: list[str] = Field(
+        default_factory=list,
+        description="Attempt identifiers that support this memory note.",
+    )
+    embedding: Optional[list[float]] = Field(
+        default=None,
+        description="Optional embedding used internally for semantic retrieval.",
+    )
+    salience_score: float = Field(
+        default=0.5,
+        description="Importance score used during retrieval ranking.",
+    )
+    status: MemoryStatus = Field(
+        default=MemoryStatus.ACTIVE,
+        description="Lifecycle status for this memory note.",
+    )
+    created_at: datetime = Field(
+        ..., description="Timestamp when this memory note was created."
+    )
+    last_seen_at: Optional[datetime] = Field(
+        default=None, description="Most recent time supporting evidence was observed."
+    )
+    last_used_at: Optional[datetime] = Field(
+        default=None, description="Most recent time this memory was retrieved for use."
+    )
+
+
+class LearningMemoryContext(BaseModel):
+    mastery_state: Optional[SkillMasteryState] = Field(
+        default=None,
+        description="Current mastery state for the requested skillpath, if available.",
+    )
+    recent_attempts: list[CodingProblemAttempt] = Field(
+        default_factory=list,
+        description="Recent attempts relevant to the current coding task.",
+    )
+    active_error_patterns: list[LearnerMemoryNote] = Field(
+        default_factory=list,
+        description="Retrieved active error-pattern memories relevant to the current task.",
+    )
+    mastery_signals: list[LearnerMemoryNote] = Field(
+        default_factory=list,
+        description="Retrieved mastery-signal memories relevant to the current task.",
+    )
+    teaching_heuristics: list[LearnerMemoryNote] = Field(
+        default_factory=list,
+        description="Retrieved teaching-heuristic memories relevant to the current task.",
+    )
+    background_notes: list[LearnerMemoryNote] = Field(
+        default_factory=list,
+        description="Retrieved background or preference memories relevant to the current task.",
+    )
+    relevant_notes: list[LearnerMemoryNote] = Field(
+        default_factory=list,
+        description="Retrieved learner memory notes ranked for the current task.",
+    )
+
+
+class RecordAndConsolidateAttemptResult(BaseModel):
+    attempt: CodingProblemAttempt = Field(
+        ..., description="The coding problem attempt that was persisted."
+    )
+    updated_notes: list[LearnerMemoryNote] = Field(
+        default_factory=list,
+        description="Memory notes created or updated during consolidation.",
+    )
+
+
+class MemorySalienceAdjustment(BaseModel):
+    memory_id: str = Field(..., description="Memory note the judgment wants to adjust.")
+    delta: float = Field(
+        ...,
+        description=(
+            "Suggested salience change. The memory service clamps this before "
+            "applying it."
+        ),
+    )
+    reason: str = Field(..., description="Short rationale for the adjustment.")
+
+
+class MemoryConsolidationJudgment(BaseModel):
+    attempt_importance: Literal["low", "medium", "high"] = "medium"
+    success_quality: Literal["none", "shallow", "normal", "strong"] = "none"
+    failure_kind: Literal["none", "same_pattern", "new_pattern", "mechanical_error"] = (
+        "none"
+    )
+    related_error_pattern_ids: list[str] = Field(default_factory=list)
+    merge_candidate_ids: list[list[str]] = Field(default_factory=list)
+    salience_adjustments: list[MemorySalienceAdjustment] = Field(default_factory=list)
+    mastery_delta: float = Field(
+        default=0.0,
+        description="Suggested mastery-score change. The service clamps before use.",
+    )
+    should_create_heuristic: bool = False
+    should_mark_resolved: bool = False
+    teaching_heuristic_summary: Optional[str] = None
+    rationale: str = Field(
+        default="No optional consolidation judgment was provided.",
+        description="Human-readable explanation of the judgment.",
+    )
+
+
+class CodeCorrectionRequest(BaseModel):
+    user_id: str = Field(..., description="Learner requesting code correction.")
+    skillpath_id: str = Field(..., description="Skillpath tied to the coding problem.")
+    content_id: str = Field(..., description="Coding problem content identifier.")
+    coding_problem_prompt: str = Field(
+        ..., description="Prompt or instructions for the coding problem."
+    )
+    submitted_code: str = Field(..., description="Learner-submitted code to review.")
+    language: str = Field(..., description="Programming language of the submission.")
+    compile_error: Optional[str] = Field(
+        default=None,
+        description="Optional syntax or compiler error captured by the evaluator.",
+    )
+    runtime_error: Optional[str] = Field(
+        default=None,
+        description="Optional runtime error captured by the evaluator.",
+    )
+    test_results: list[TestCaseResult] = Field(
+        default_factory=list,
+        description="Optional structured test results from a sandbox or external evaluator.",
+    )
+    correctness: Optional[AttemptCorrectness] = Field(
+        default=None,
+        description="Optional precomputed correctness result from an evaluator.",
+    )
+    score: Optional[float] = Field(
+        default=None,
+        description="Optional normalized score supplied by an evaluator.",
+    )
+    feedback_summary: Optional[str] = Field(
+        default=None,
+        description="Optional evaluator summary. If omitted, the service derives a basic one.",
+    )
+    detected_concepts: list[str] = Field(
+        default_factory=list,
+        description="Concepts believed to be relevant to the current submission.",
+    )
+    detected_mistakes: list[str] = Field(
+        default_factory=list,
+        description="Mistakes detected by an evaluator or agent.",
+    )
+    top_k_notes: int = Field(
+        default=5,
+        description="How many memory notes to retrieve for context assembly.",
+    )
+    top_k_attempts: int = Field(
+        default=3,
+        description="How many recent attempts to retrieve for context assembly.",
+    )
+
+
+class CodeCorrectionResult(BaseModel):
+    inferred_correctness: AttemptCorrectness = Field(
+        ..., description="Normalized correctness outcome used for persistence."
+    )
+    feedback_summary: str = Field(
+        ..., description="Correction summary stored for this attempt."
+    )
+    retrieval_context: LearningMemoryContext = Field(
+        ...,
+        description="Learner memory context retrieved before attempt persistence.",
+    )
+    persistence_result: RecordAndConsolidateAttemptResult = Field(
+        ...,
+        description="Persisted attempt plus memory notes updated during consolidation.",
+    )
+    suggested_focus: list[str] = Field(
+        default_factory=list,
+        description="Concepts or mistakes the correction agent should emphasize next.",
+    )
+
+
+class CodeSubmissionResult(BaseModel):
+    validation: Any = Field(
+        ...,
+        description=(
+            "Structured CodeValidationResult returned by the validator. Kept "
+            "structural here to avoid a schema import cycle."
+        ),
+    )
+    correction: CodeCorrectionResult = Field(
+        ...,
+        description="Correction, persistence, and memory-consolidation result.",
+    )
+
+
+class AddMemoryNoteInput(BaseModel):
+    user_id: str
+    memory_type: MemoryType
+    title: str
+    summary: str
+    tags: list[str] = Field(default_factory=list)
+    linked_concepts: list[str] = Field(default_factory=list)
+    linked_skillpath_ids: list[str] = Field(default_factory=list)
+    linked_content_ids: list[str] = Field(default_factory=list)
+    evidence_attempt_ids: list[str] = Field(default_factory=list)
+    salience_score: float = 0.5
+    status: MemoryStatus = MemoryStatus.ACTIVE
+
+
+class UpdateMemoryNoteInput(BaseModel):
+    memory_id: str
+    memory_type: Optional[MemoryType] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    tags: Optional[list[str]] = None
+    linked_concepts: Optional[list[str]] = None
+    linked_skillpath_ids: Optional[list[str]] = None
+    linked_content_ids: Optional[list[str]] = None
+    evidence_attempt_ids: Optional[list[str]] = None
+    salience_score: Optional[float] = None
+    status: Optional[MemoryStatus] = None
+
+
+class RecordCodingProblemAttemptInput(BaseModel):
+    user_id: str
+    skillpath_id: str
+    content_id: str
+    submitted_code: str
+    language: str
+    correctness: AttemptCorrectness
+    feedback_summary: str
+    detected_concepts: list[str] = Field(default_factory=list)
+    detected_mistakes: list[str] = Field(default_factory=list)
+    compile_error: Optional[str] = None
+    runtime_error: Optional[str] = None
+    score: Optional[float] = None
+    test_results: list[TestCaseResult] = Field(default_factory=list)
+
+
+class RetrieveLearningMemoryInput(BaseModel):
+    user_id: str
+    query_text: str
+    skillpath_id: Optional[str] = None
+    content_id: Optional[str] = None
+    concept_keys: list[str] = Field(default_factory=list)
+    memory_types: list[MemoryType] = Field(default_factory=list)
+    top_k_notes: int = 5
+    top_k_attempts: int = 3
