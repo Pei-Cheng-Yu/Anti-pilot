@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from app.mcp.server import mcp
 from app.schema.entities import (
+    CodeCorrectionResult,
+    CodeSubmissionResult,
     GoalSpec,
     LearningProfile,
     MilestoneItem,
@@ -22,6 +24,8 @@ from app.schema.entities import (
     RoadmapFull,
     SkillPathItem,
 )
+from app.schema.enums import AttemptCorrectness
+from app.validators.schemas import CodeValidationResult
 from fastmcp import Client
 
 # --- Fixtures ---
@@ -143,6 +147,8 @@ async def test_all_tools_registered(client: Client):
     names = {t.name for t in tools}
 
     expected = {
+        "code_correction_submit_code_attempt",
+        "code_correction_process_code_correction",
         "goal_save_goal",
         "goal_get_goal",
         "learning_profile_save_learning_profile",
@@ -152,6 +158,75 @@ async def test_all_tools_registered(client: Client):
         "roadmap_update_skillpath",
     }
     assert expected.issubset(names)
+
+
+async def test_submit_code_attempt_tool_accepts_validation_request(client: Client):
+    validation = CodeValidationResult(
+        correctness=AttemptCorrectness.RUNTIME_ERROR,
+        has_serious_blocker=True,
+        blocker_reason="Un-awaited coroutine",
+        runtime_error="RuntimeWarning: coroutine was never awaited",
+        validation_strategy="fake_validator",
+        feedback_summary="Missing await.",
+        detected_concepts=["fastapi.async"],
+        detected_mistakes=["missing await"],
+        confidence_score=0.9,
+    )
+    correction = CodeCorrectionResult(
+        inferred_correctness=AttemptCorrectness.RUNTIME_ERROR,
+        feedback_summary="Missing await.",
+        retrieval_context={
+            "recent_attempts": [],
+            "active_error_patterns": [],
+            "mastery_signals": [],
+            "teaching_heuristics": [],
+            "background_notes": [],
+            "relevant_notes": [],
+        },
+        persistence_result={
+            "attempt": {
+                "attempt_id": "attempt-1",
+                "user_id": "user-123",
+                "skillpath_id": "sp-1",
+                "content_id": "cp-1",
+                "submitted_code": "async def route(): pass",
+                "language": "python",
+                "correctness": "runtime_error",
+                "feedback_summary": "Missing await.",
+                "detected_concepts": ["fastapi.async"],
+                "detected_mistakes": ["missing await"],
+                "test_results": [],
+                "submitted_at": "2026-05-19T00:00:00",
+            },
+            "updated_notes": [],
+        },
+        suggested_focus=["missing await"],
+    )
+    submission = CodeSubmissionResult(validation=validation, correction=correction)
+
+    with patch(
+        "app.services.code_correction.submit_code_attempt",
+        new=AsyncMock(return_value=submission),
+    ) as submit:
+        result = await client.call_tool(
+            "code_correction_submit_code_attempt",
+            {
+                "request": {
+                    "user_id": "user-123",
+                    "skillpath_id": "sp-1",
+                    "content_id": "cp-1",
+                    "language": "python",
+                    "coding_problem_prompt": "Await fetch_user().",
+                    "submitted_code": "async def route(): pass",
+                    "runtime_error": "RuntimeWarning: coroutine was never awaited",
+                }
+            },
+        )
+
+    submit.assert_awaited_once()
+    data = result_data(result)
+    assert data["validation"]["validation_strategy"] == "fake_validator"
+    assert data["correction"]["inferred_correctness"] == "runtime_error"
 
 
 # --- Goal tools ---
