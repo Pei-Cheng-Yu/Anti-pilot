@@ -31,6 +31,13 @@ class LearningDirectorContext(TypedDict):
     user_id: str
 
 
+def planner_roadmap_id(result: dict) -> str:
+    roadmap_id = result.get("roadmap_id") or result.get("roadmap_uuid")
+    if not roadmap_id:
+        raise ValueError("Planner result did not include roadmap_id or roadmap_uuid.")
+    return roadmap_id
+
+
 @tool(parse_docstring=True)
 async def run_planner(
     goal: GoalSpec,
@@ -51,7 +58,7 @@ async def run_planner(
         lambda: _planner.invoke({"goal_spec": goal, "learning_profile": profile}),
     )
 
-    roadmap_id = result["roadmap_uuid"]
+    roadmap_id = planner_roadmap_id(result)
     roadmap = result.get("roadmap")
     user_id = runtime.context["user_id"]
 
@@ -59,6 +66,7 @@ async def run_planner(
         await roadmap_service.save_roadmap(
             user_id=user_id,
             roadmap_id=roadmap_id,
+            title=roadmap.title if roadmap else goal.title,
             version=roadmap.version if roadmap else 1,
             summary=roadmap.summary if roadmap else "",
             target_outcome=roadmap.target_outcome if roadmap else goal.target_outcome,

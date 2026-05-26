@@ -1,10 +1,10 @@
 from collections import defaultdict
 from uuid import uuid4
 
-from app.schema.entities import SkillPathItem
+from app.langgraph.planner.schema.entities import SkillPathItem
 
 
-def finalize_skillpaths(skillpath_drafts: list[dict]) -> list[SkillPathItem]:
+def finalize_skillpaths(roadmap_id: str, skillpath_drafts: list[dict]) -> list[SkillPathItem]:
     title_to_id = {}
     items = []
 
@@ -14,6 +14,7 @@ def finalize_skillpaths(skillpath_drafts: list[dict]) -> list[SkillPathItem]:
 
         items.append(
             SkillPathItem(
+                roadmap_id=roadmap_id,
                 skillpath_id=sid,
                 milestone_id=draft["milestone_id"],
                 title=draft["title"],
