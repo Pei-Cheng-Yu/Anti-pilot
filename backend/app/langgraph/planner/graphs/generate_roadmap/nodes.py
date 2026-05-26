@@ -5,9 +5,8 @@ from app.langgraph.planner.policy_prompt.milestone import (
     SHARED_MILESTONE_POLICY,
     SHARED_MILESTONE_POLICY_CORE,
 )
-from app.langgraph.planner.schema.review import QuickReviewResponse
+from app.langgraph.planner.schema.entities import MilestoneItem, QuickReviewResponse
 from app.langgraph.planner.schema.state import PlannerState
-from app.schema.entities import MilestoneItem
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
@@ -45,17 +44,32 @@ class SkillPathResponse(BaseModel):
 
 
 def init_roadmap_context(state: PlannerState):
-    if not state.get("roadmap_uuid"):
-        return {"roadmap_uuid": str(uuid4())}
-    return {}
+    roadmap_id = state.get("roadmap_id") or str(uuid4())
+    goal_spec = state.get("goal_spec")
+
+    # Initialize the RoadmapItem object
+    from app.langgraph.planner.schema.entities import RoadmapItem
+    roadmap = RoadmapItem(
+        roadmap_id=roadmap_id,
+        title=goal_spec.title if goal_spec else "Unnamed Roadmap",
+        version=1,
+        summary=goal_spec.description if goal_spec else "",
+        target_outcome=goal_spec.target_outcome if goal_spec else "",
+        assumptions=goal_spec.constraints if goal_spec else []
+    )
+
+    return {
+        "roadmap_id": roadmap_id,
+        "roadmap": roadmap
+    }
 
 
 def generate_milestone(state: PlannerState):
-    roadmap_uuid = state.get("roadmap_uuid")
+    roadmap_id = state.get("roadmap_id")
     goal_spec = state.get("goal_spec")
     learning_profile = state.get("learning_profile")
 
-    if not roadmap_uuid or not goal_spec or not learning_profile:
+    if not roadmap_id or not goal_spec or not learning_profile:
         return {}
 
     prompt = MILESTONE_PROMPT.format(
@@ -79,7 +93,7 @@ def generate_milestone(state: PlannerState):
     for i, simple in enumerate(response.milestones, start=1):
         milestones.append(
             MilestoneItem(
-                roadmap_uuid=roadmap_uuid,
+                roadmap_id=roadmap_id,
                 milestone_id=str(uuid4()),
                 title=simple.title,
                 description=simple.description,
@@ -157,7 +171,7 @@ def route_after_milestone_quick_review(state: PlannerState):
                 Send(
                     "skillpath_worker",
                     {
-                        "roadmap_uuid": state["roadmap_uuid"],
+                        "roadmap_id": state["roadmap_id"],
                         "goal_spec": state.get("goal_spec"),
                         "learning_profile": state.get("learning_profile"),
                         "milestone": milestone,
@@ -170,7 +184,7 @@ def route_after_milestone_quick_review(state: PlannerState):
 
 
 def revise_milestones(state: PlannerState):
-    roadmap_uuid = state.get("roadmap_uuid")
+    roadmap_id = state.get("roadmap_id")
     goal_spec = state.get("goal_spec")
     learning_profile = state.get("learning_profile")
     milestones = state.get("milestones", [])
@@ -178,7 +192,7 @@ def revise_milestones(state: PlannerState):
     revision_count = state.get("milestone_revision_count", 0)
 
     if (
-        not roadmap_uuid
+        not roadmap_id
         or not goal_spec
         or not learning_profile
         or not milestones
@@ -229,7 +243,7 @@ def revise_milestones(state: PlannerState):
     for i, simple in enumerate(response.milestones, start=1):
         revised_milestones.append(
             MilestoneItem(
-                roadmap_uuid=roadmap_uuid,
+                roadmap_id=roadmap_id,
                 milestone_id=str(uuid4()),
                 title=simple.title,
                 description=simple.description,
@@ -250,11 +264,12 @@ def revise_milestones(state: PlannerState):
 
 
 def skillpath_worker(state: PlannerState):
+    roadmap_id = state.get("roadmap_id")
     milestone = state.get("milestone")
     goal_spec = state.get("goal_spec")
     learning_profile = state.get("learning_profile")
 
-    if not milestone or not goal_spec or not learning_profile:
+    if not roadmap_id or not milestone or not goal_spec or not learning_profile:
         return {}
 
     prompt = SKILLPATH_PROMPT.format(
@@ -278,6 +293,7 @@ def skillpath_worker(state: PlannerState):
     for simple in response.skillpaths:
         drafts.append(
             {
+                "roadmap_id": roadmap_id,
                 "milestone_id": milestone.milestone_id,
                 "title": simple.title,
                 "description": simple.description,
@@ -291,9 +307,10 @@ def skillpath_worker(state: PlannerState):
 
 
 def finalize_skillpath(state: PlannerState):
+    roadmap_id = state.get("roadmap_id")
     drafts = state.get("skillpath_drafts", [])
-    if not drafts:
+    if not drafts or not roadmap_id:
         return {}
 
-    skillpaths = finalize_skillpaths(drafts)
+    skillpaths = finalize_skillpaths(roadmap_id, drafts)
     return {"skillpaths": skillpaths}

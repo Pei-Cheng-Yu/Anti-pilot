@@ -7,7 +7,7 @@ from app.schema.enums import (
     LearningContentType,
     PracticeMode,
 )
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class GoalSpec(BaseModel):
@@ -206,6 +206,12 @@ class MilestoneRecap(BaseModel):
 
 
 class SkillPathItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    roadmap_id: Optional[str] = Field(
+        default=None,
+        description="Optional parent roadmap ID kept for REST/API compatibility.",
+    )
     skillpath_id: str = Field(
         ..., description="Unique identifier for this skill path unit."
     )
@@ -263,8 +269,12 @@ class SkillPathItem(BaseModel):
 
 
 class MilestoneItem(BaseModel):
-    roadmap_uuid: str = Field(
-        ..., description="The parent roadmap this milestone belongs to."
+    model_config = ConfigDict(populate_by_name=True)
+
+    roadmap_id: str = Field(
+        ...,
+        description="The parent roadmap this milestone belongs to.",
+        validation_alias=AliasChoices("roadmap_id", "roadmap_uuid"),
     )
     milestone_id: str = Field(..., description="Unique identifier for this milestone.")
     title: str = Field(..., description="Short title of the milestone.")
@@ -296,9 +306,16 @@ class MilestoneItem(BaseModel):
         default=None, description="Reason why this milestone needs revision."
     )
 
+    @property
+    def roadmap_uuid(self) -> str:
+        return self.roadmap_id
+
 
 class RoadmapItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     roadmap_id: str
+    title: str = Field(default="", description="Short title of the roadmap.")
     version: int = Field(
         ...,
         description="Version number of the roadmap. Increment this when the roadmap is revised.",
@@ -318,8 +335,14 @@ class RoadmapItem(BaseModel):
 
 
 class MilestoneWithSkillPaths(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     milestone_id: str = Field(..., description="Unique identifier for this milestone.")
-    roadmap_uuid: str = Field(..., description="Parent roadmap ID.")
+    roadmap_id: str = Field(
+        ...,
+        description="Parent roadmap ID.",
+        validation_alias=AliasChoices("roadmap_id", "roadmap_uuid"),
+    )
     title: str = Field(..., description="Short title of the milestone.")
     description: str = Field(
         ..., description="Explanation of what this milestone covers."
@@ -345,9 +368,14 @@ class MilestoneWithSkillPaths(BaseModel):
         description="Optional recap units generated after milestone-level content is complete.",
     )
 
+    @property
+    def roadmap_uuid(self) -> str:
+        return self.roadmap_id
+
 
 class RoadmapFull(BaseModel):
     roadmap_id: str
+    title: str = ""
     version: int
     summary: str
     target_outcome: str

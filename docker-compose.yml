@@ -12,6 +12,26 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    working_dir: /app
+    command: alembic -c /app/alembic.ini upgrade head
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    depends_on:
+      db:
+        condition: service_healthy
 
   backend:
     build:
@@ -27,7 +47,8 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
     depends_on:
-      - db
+      migrate:
+        condition: service_completed_successfully
     restart: on-failure
 
   mcp:
@@ -44,7 +65,8 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
     depends_on:
-      - db
+      migrate:
+        condition: service_completed_successfully
     restart: on-failure
 
 volumes:
