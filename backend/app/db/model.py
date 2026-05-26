@@ -1,6 +1,16 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, MetaData, String, Text, func
+from sqlalchemy import (
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -77,6 +87,7 @@ class RoadmapModel(Base):
 
     roadmap_id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.user_id"))
+    title: Mapped[str] = mapped_column(String, default="")
     version: Mapped[int]
     summary: Mapped[str] = mapped_column(Text)
     target_outcome: Mapped[str] = mapped_column(Text)
@@ -157,3 +168,23 @@ class LearningContentModel(Base):
     skillpath: Mapped["SkillPathModel"] = relationship(
         back_populates="learning_contents"
     )
+
+
+class ReviewConceptModel(Base):
+    __tablename__ = "review_concepts"
+
+    concept_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True, default="default-user")
+    source_type: Mapped[str] = mapped_column(String)
+    source_ref_id: Mapped[str] = mapped_column(String)
+    concept_metadata: Mapped[dict] = mapped_column(JSONB)
+    state: Mapped[int] = mapped_column(Integer)
+    due: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    stability: Mapped[float] = mapped_column(Float, default=0.0)
+    difficulty: Mapped[float] = mapped_column(Float, default=0.0)
+    elapsed_days: Mapped[int] = mapped_column(Integer, default=0)
+    scheduled_days: Mapped[int] = mapped_column(Integer, default=0)
+    reps: Mapped[int] = mapped_column(Integer, default=0)
+    lapses: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

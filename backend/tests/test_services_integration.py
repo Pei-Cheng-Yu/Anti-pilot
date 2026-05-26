@@ -9,6 +9,7 @@ from app.db.model import (
     LearningContentModel,
     LearningProfileModel,
     MilestoneModel,
+    ReviewConceptModel,
     RoadmapModel,
     SkillPathModel,
     UserModel,
@@ -25,7 +26,7 @@ from app.schema.enums import LearningContentType, PracticeMode
 from app.services import goal as goal_service
 from app.services import learning_profile as learning_profile_service
 from app.services import roadmap as roadmap_service
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -159,6 +160,23 @@ async def test_user():
                         ).scalars()
                     )
                     if skillpath_ids:
+                        content_ids = list(
+                            (
+                                await cleanup_session.execute(
+                                    select(LearningContentModel.content_id).where(
+                                        LearningContentModel.skillpath_id.in_(
+                                            skillpath_ids
+                                        )
+                                    )
+                                )
+                            ).scalars()
+                        )
+                        if content_ids:
+                            await cleanup_session.execute(
+                                delete(ReviewConceptModel).where(
+                                    ReviewConceptModel.source_ref_id.in_(content_ids)
+                                )
+                            )
                         await cleanup_session.execute(
                             delete(LearningContentModel).where(
                                 LearningContentModel.skillpath_id.in_(skillpath_ids)
@@ -225,6 +243,7 @@ async def test_roadmap_service_roundtrip_and_scoping(db_session, test_user: str)
     saved_roadmap_id = await roadmap_service.save_roadmap(
         user_id=test_user,
         roadmap_id=roadmap_id,
+        title="FastAPI",
         version=1,
         summary="FastAPI learning roadmap",
         target_outcome="Build a production-style FastAPI project.",
@@ -237,6 +256,7 @@ async def test_roadmap_service_roundtrip_and_scoping(db_session, test_user: str)
 
     assert saved_roadmap_id == roadmap_id
     assert loaded.roadmap_id == roadmap_id
+    assert loaded.title == "FastAPI"
     assert loaded.summary == "FastAPI learning roadmap"
     assert len(loaded.milestones) == 1
     assert loaded.milestones[0].title == "Foundations"
@@ -299,6 +319,7 @@ async def test_roadmap_service_persists_generated_learning_contents(
             "learning_contents": [make_article_content(skillpath.skillpath_id)],
         }
     )
+    original_generated_content_id = generated_skillpath.learning_contents[0].content_id
 
     saved_skillpaths = await roadmap_service.save_generated_skillpaths(
         test_user, [generated_skillpath], db_session
@@ -315,3 +336,76 @@ async def test_roadmap_service_persists_generated_learning_contents(
         == LearningContentType.ARTICLE
     )
     assert loaded_skillpath.learning_contents[0].title == "HTTP request basics"
+    first_content_id = loaded_skillpath.learning_contents[0].content_id
+    assert generated_skillpath.learning_contents[0].content_id == original_generated_content_id
+    assert first_content_id != original_generated_content_id
+
+    review_result = await db_session.execute(
+        select(ReviewConceptModel).where(
+            ReviewConceptModel.user_id == test_user,
+            ReviewConceptModel.source_type == "skill_path",
+            ReviewConceptModel.source_ref_id
+            == loaded_skillpath.learning_contents[0].content_id,
+        )
+    )
+    review_card = review_result.scalar_one_or_none()
+    assert review_card is not None
+    assert review_card.concept_metadata["skillpath_id"] == skillpath.skillpath_id
+    assert review_card.concept_metadata["content_type"] == "article"
+    review_card.reps = 3
+    review_card.lapses = 1
+    review_card.stability = 4.0
+    review_card.difficulty = 5.0
+    await db_session.commit()
+
+    await roadmap_service.save_generated_skillpaths(
+        test_user, [generated_skillpath], db_session
+    )
+    reloaded = await roadmap_service.get_roadmap_full(test_user, roadmap_id, db_session)
+    reloaded_content_id = reloaded.milestones[0].skillpaths[0].learning_contents[
+        0
+    ].content_id
+    assert reloaded_content_id == first_content_id
+    preserved_review_result = await db_session.execute(
+        select(ReviewConceptModel).where(
+            ReviewConceptModel.user_id == test_user,
+            ReviewConceptModel.source_type == "skill_path",
+            ReviewConceptModel.source_ref_id == first_content_id,
+        )
+    )
+    preserved_review_card = preserved_review_result.scalar_one()
+    assert preserved_review_card.reps == 3
+    assert preserved_review_card.lapses == 1
+
+    review_count_result = await db_session.execute(
+        select(func.count()).select_from(ReviewConceptModel).where(
+            ReviewConceptModel.user_id == test_user,
+            ReviewConceptModel.source_type == "skill_path",
+            ReviewConceptModel.source_ref_id == first_content_id,
+        )
+    )
+    assert review_count_result.scalar_one() == 1
+
+    changed_content = make_article_content(skillpath.skillpath_id).model_copy(
+        update={"reading_content": "A changed explanation for regenerated content."}
+    )
+    changed_skillpath = skillpath.model_copy(
+        update={
+            "status": "generated",
+            "need_generation": False,
+            "learning_contents": [changed_content],
+        }
+    )
+    await roadmap_service.save_generated_skillpaths(
+        test_user, [changed_skillpath], db_session
+    )
+    reset_review_result = await db_session.execute(
+        select(ReviewConceptModel).where(
+            ReviewConceptModel.user_id == test_user,
+            ReviewConceptModel.source_type == "skill_path",
+            ReviewConceptModel.source_ref_id == first_content_id,
+        )
+    )
+    reset_review_card = reset_review_result.scalar_one()
+    assert reset_review_card.reps == 0
+    assert reset_review_card.lapses == 0

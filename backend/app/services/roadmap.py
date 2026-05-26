@@ -13,6 +13,7 @@ from app.schema.entities import (
     SkillPathItem,
 )
 from app.schema.enums import PracticeMode
+from app.services.review import seed_learning_content_review_cards
 from pydantic import TypeAdapter
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,12 @@ from sqlalchemy.orm import selectinload
 
 
 learning_content_adapter = TypeAdapter(LearningContentItem)
+
+
+def _stable_content_id(
+    skillpath_id: str, content_type: str, type_index: int, existing_id: str | None
+) -> str:
+    return existing_id or f"{skillpath_id}:{content_type}:{type_index}"
 
 
 def _to_learning_content_item(row: LearningContentModel) -> LearningContentItem:
@@ -50,6 +57,62 @@ def _to_skillpath_item(row: SkillPathModel) -> SkillPathItem:
             )
         ],
     )
+
+
+def _toposort_skillpaths(skillpaths: list[SkillPathItem]) -> list[SkillPathItem]:
+    """Kahn topological sort on prerequisite_skillpath_ids within the given list.
+
+    Cross-milestone prerequisites (IDs not present in this list) are ignored
+    so that within-milestone ordering is stable even when an external prereq
+    is missing. Ties are broken by original insertion order so the output is
+    deterministic. If a cycle is detected, the remaining nodes are appended
+    in their original order rather than dropped.
+    """
+    if not skillpaths:
+        return []
+
+    index_of = {sp.skillpath_id: i for i, sp in enumerate(skillpaths)}
+    ids_in_scope = set(index_of)
+    indegree: dict[str, int] = {sp.skillpath_id: 0 for sp in skillpaths}
+    for sp in skillpaths:
+        for prereq in sp.prerequisite_skillpath_ids:
+            if prereq in ids_in_scope and prereq != sp.skillpath_id:
+                indegree[sp.skillpath_id] += 1
+
+    ready = sorted(
+        (sp_id for sp_id, deg in indegree.items() if deg == 0),
+        key=lambda sp_id: index_of[sp_id],
+    )
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    while ready:
+        current = ready.pop(0)
+        ordered_ids.append(current)
+        seen.add(current)
+        dependents = [
+            sp for sp in skillpaths
+            if current in sp.prerequisite_skillpath_ids and sp.skillpath_id not in seen
+        ]
+        for dep in sorted(dependents, key=lambda sp: index_of[sp.skillpath_id]):
+            indegree[dep.skillpath_id] -= 1
+            if indegree[dep.skillpath_id] == 0:
+                # Insert in original-order position among current ready set.
+                insert_at = 0
+                while (
+                    insert_at < len(ready)
+                    and index_of[ready[insert_at]] < index_of[dep.skillpath_id]
+                ):
+                    insert_at += 1
+                ready.insert(insert_at, dep.skillpath_id)
+
+    if len(ordered_ids) < len(skillpaths):
+        # Cycle or unreachable nodes — append the rest in original order.
+        for sp in skillpaths:
+            if sp.skillpath_id not in seen:
+                ordered_ids.append(sp.skillpath_id)
+
+    by_id = {sp.skillpath_id: sp for sp in skillpaths}
+    return [by_id[sp_id] for sp_id in ordered_ids]
 
 
 def _to_milestone_item(row: MilestoneModel) -> MilestoneItem:
@@ -94,7 +157,9 @@ async def get_roadmap_full(
 
     milestones = []
     for m in sorted(roadmap.milestones, key=lambda x: x.order_index):
-        skillpaths = [_to_skillpath_item(sp) for sp in m.skillpaths]
+        skillpaths = _toposort_skillpaths(
+            [_to_skillpath_item(sp) for sp in m.skillpaths]
+        )
         milestones.append(
             MilestoneWithSkillPaths(
                 milestone_id=m.milestone_id,
@@ -115,6 +180,7 @@ async def get_roadmap_full(
 
     return RoadmapFull(
         roadmap_id=roadmap.roadmap_id,
+        title=roadmap.title,
         version=roadmap.version,
         summary=roadmap.summary,
         target_outcome=roadmap.target_outcome,
@@ -136,6 +202,7 @@ async def save_roadmap(
     milestones: list[MilestoneItem],
     skillpaths: list[SkillPathItem],
     session: AsyncSession,
+    title: str | None = None,
 ) -> str:
     """Save full planner output (flat) to DB. Called by run_planner tool."""
     user = await session.get(UserModel, user_id)
@@ -146,6 +213,7 @@ async def save_roadmap(
         RoadmapModel(
             user_id=user_id,
             roadmap_id=roadmap_id,
+            title=title or summary or target_outcome,
             version=version,
             summary=summary,
             target_outcome=target_outcome,
@@ -282,30 +350,65 @@ async def save_generated_skillpaths(
             f"SkillPath {sorted(missing_ids)[0]} not found for user {user_id}"
         )
 
+    existing_content_ids = {}
+    existing_payloads = {}
+    for row in rows.values():
+        type_counts = {}
+        for existing in sorted(row.learning_contents, key=lambda item: item.order_index):
+            type_index = type_counts.get(existing.content_type, 0)
+            existing_payloads[existing.content_id] = existing.payload
+            existing_content_ids[
+                (row.skillpath_id, existing.content_type, type_index)
+            ] = existing.content_id
+            type_counts[existing.content_type] = type_index + 1
+
     await session.execute(
         delete(LearningContentModel).where(
             LearningContentModel.skillpath_id.in_(skillpath_ids)
         )
     )
 
+    saved_contents = []
+    reset_content_ids: set[str] = set()
     for sp in skillpaths:
         row = rows[sp.skillpath_id]
         row.status = sp.status
         row.need_generation = sp.need_generation
         row.practice_mode = sp.practice_mode.value if sp.practice_mode else None
+        new_counts = {}
         for order_index, content in enumerate(sp.learning_contents):
+            content_type = content.content_type.value
+            type_index = new_counts.get(content_type, 0)
+            stable_content_id = _stable_content_id(
+                sp.skillpath_id,
+                content_type,
+                type_index,
+                existing_content_ids.get((sp.skillpath_id, content_type, type_index)),
+            )
+            new_counts[content_type] = type_index + 1
+            saved_content = content.model_copy(update={"content_id": stable_content_id})
+            saved_payload = saved_content.model_dump(mode="json")
+            if (
+                stable_content_id in existing_payloads
+                and existing_payloads[stable_content_id] != saved_payload
+            ):
+                reset_content_ids.add(stable_content_id)
+            saved_contents.append(saved_content)
             session.add(
                 LearningContentModel(
-                    content_id=content.content_id,
+                    content_id=saved_content.content_id,
                     skillpath_id=sp.skillpath_id,
-                    content_type=content.content_type.value,
-                    title=content.title,
-                    description=content.description,
+                    content_type=content_type,
+                    title=saved_content.title,
+                    description=saved_content.description,
                     order_index=order_index,
-                    payload=content.model_dump(mode="json"),
+                    payload=saved_payload,
                 )
             )
 
+    await seed_learning_content_review_cards(
+        user_id, saved_contents, session, reset_content_ids
+    )
     await session.commit()
     session.expire_all()
 
