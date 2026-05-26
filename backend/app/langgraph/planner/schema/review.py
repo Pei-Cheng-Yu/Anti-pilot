@@ -1,24 +1,7 @@
 import operator
 from typing import Annotated, Literal
 
-from app.schema.entities import (
-    ArticleLearningContent,
-    CodingProblemLearningContent,
-    ContentGenerationPlan,
-    ContentSourceNote,
-    GoalSpec,
-    LearningContentItem,
-    LearningProfile,
-    MilestoneItem,
-    MilestoneRecap,
-    MilestoneWithSkillPaths,
-    MultipleChoiceLearningContent,
-    MultipleChoiceOption,
-    RoadmapFull,
-    RoadmapItem,
-    SkillPathItem,
-    SourceLink,
-)
+from app.schema.entities import SkillPathItem
 from pydantic import BaseModel, Field
 
 
@@ -64,27 +47,3 @@ class SkillPathRevisionResponse(BaseModel):
     milestone_id: str
     summary: str
     skillpaths: list[SkillPathItem]
-
-
-__all__ = [
-    "ArticleLearningContent",
-    "CodingProblemLearningContent",
-    "ContentGenerationPlan",
-    "ContentSourceNote",
-    "GoalSpec",
-    "LearningContentItem",
-    "LearningProfile",
-    "MilestoneItem",
-    "MilestoneRecap",
-    "MilestoneWithSkillPaths",
-    "MultipleChoiceLearningContent",
-    "MultipleChoiceOption",
-    "QuickReviewResponse",
-    "ReviewFinding",
-    "RoadmapFull",
-    "RoadmapItem",
-    "SkillPathEvaluateResponse",
-    "SkillPathItem",
-    "SkillPathRevisionResponse",
-    "SourceLink",
-]
