@@ -1,5 +1,5 @@
 SKILLPATHS_EVALUATE_PROMPT = """
-You are an expert learning roadmap reviewer.
+You are an expert learning roadmap reviewer, and will going to revise the skillpath directly.
 
 Your job is to evaluate whether the proposed skill paths are a good decomposition of one already-approved milestone.
 
@@ -35,10 +35,12 @@ Only flag a missing foundation when the current skill path set itself cannot rea
 Decide whether the skill paths are concrete enough for downstream task generation and planning.
 A good set of skill paths should be clear enough that later nodes could turn each one into tasks, exercises, mini-projects, or resources.
 
-## Step 6: Report only real issues
-Return findings only when there is a meaningful problem.
-Do not flag cosmetic wording preferences or minor phrasing issues.
-If the skill path set is reasonable, return an empty findings list.
+## Step 6: Revise the current skill paths so they become:
+- structurally sound
+- appropriately scoped for the learner
+- properly sequenced
+- complete enough to support the milestone objective
+- aligned with the learner's baseline, weak areas, and pace
 
 ## Review Boundaries
 Important:
@@ -79,80 +81,6 @@ Look for meaningful issues such as:
 - an essential internal step is missing within this milestone’s decomposition
 - the ordering or prerequisite logic within this skill path set is weak
 - the set is too vague for downstream task generation
-
-## Severity Guidance
-Use:
-- "major" for issues that would seriously harm learning progression, learner fit, or milestone decomposition quality
-- "medium" for important issues that should likely be revised
-- "minor" for smaller quality issues that do not break the plan
-
-## Output Instructions
-Return structured output as:
-{{
-  "proceed": true or false,
-  "summary": "brief overall judgment",
-  "milestone_id": "{milestone_id}",
-  "findings": [
-    {{
-      "level": "minor" or "major",
-      "target_type": "milestone" or "skillpath",
-      "target_id": "...",
-      "issue_type": "...",
-      "reason": "...",
-      "suggested_action": "..."
-    }}
-  ]
-}}
-"""
-
-SKILLPATH_REVISE_PROMPT = """
-You are an expert learning-plan reviser.
-
-Your task is to revise the skill path set for one milestone based on evaluation findings.
-
-Shared skillpath policy core:
-{shared_skillpath_policy_core}
-
-Revise the current skill paths so they become:
-- structurally sound
-- appropriately scoped for the learner
-- properly sequenced
-- complete enough to support the milestone objective
-- aligned with the learner's baseline, weak areas, and pace
-
-You are revising skill paths under this milestone only.
-Do not revise other milestones.
-Do not output review comments.
-Output the revised skill paths directly.
-
-Goal:
-- Title: {goal_title}
-- Description: {goal_description}
-- Target outcome: {target_outcome}
-- Constraints: {goal_constraints}
-
-Learner Profile:
-- Baseline level: {learning_baseline_level}
-- Prior knowledge: {learning_prior_knowledges}
-- Weak areas: {learning_weak_areas}
-- Pace preference: {learning_pace_preference}
-
-Parent Milestone:
-- milestone_id: {milestone_id}
-- Title: {milestone_title}
-- Description: {milestone_description}
-- Objective: {milestone_objective}
-- Estimated hours: {milestone_estimated_hours}
-
-Current Skill Paths:
-{current_skillpaths}
-
-Evaluation Summary:
-{review_summary}
-
-Evaluation Findings:
-{review_findings}
-
 Follow the shared policy when revising
 
 Revision Requirements:
@@ -183,4 +111,5 @@ Rules:
 - Do not leave known major issues unresolved.
 - Reuse existing skillpath_id when a skill path is only lightly revised.
 - Create a new skillpath_id only when adding a genuinely new skill path or fully replacing one.
+
 """

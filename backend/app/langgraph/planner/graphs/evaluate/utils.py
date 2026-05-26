@@ -1,7 +1,7 @@
 from collections import defaultdict
 from typing import Optional
 
-from app.langgraph.planner.schema.entities import MilestoneItem, SkillPathItem
+from app.schema.entities import MilestoneItem, SkillPathItem
 from pydantic import BaseModel
 
 

@@ -3,7 +3,7 @@ from datetime import date
 from pathlib import Path
 
 from app.langgraph.planner.graphs.generate_roadmap.graph import build_planner_graph
-from app.langgraph.planner.schema.entities import GoalSpec, LearningProfile
+from app.schema.entities import GoalSpec, LearningProfile
 from dotenv import load_dotenv
 
 # need loadenv manually so langsmith can trace this run
