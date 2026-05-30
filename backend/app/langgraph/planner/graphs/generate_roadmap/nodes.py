@@ -7,7 +7,7 @@ from app.langgraph.planner.policy_prompt.milestone import (
 )
 from app.langgraph.planner.schema.review import QuickReviewResponse
 from app.langgraph.planner.schema.state import PlannerState
-from app.schema.entities import MilestoneItem
+from app.schema.entities import MilestoneItem, RoadmapItem
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
@@ -296,4 +296,30 @@ def finalize_skillpath(state: PlannerState):
         return {}
 
     skillpaths = finalize_skillpaths(drafts)
-    return {"skillpaths": skillpaths}
+    roadmap_uuid = state.get("roadmap_uuid")
+    goal_spec = state.get("goal_spec")
+    learning_profile = state.get("learning_profile")
+    milestones = state.get("milestones", [])
+
+    if not roadmap_uuid or not goal_spec or not learning_profile:
+        return {"skillpaths": skillpaths}
+
+    assumptions = [
+        f"Planner considered stated constraints: {', '.join(goal_spec.constraints)}.",
+        f"Planner considered baseline level: {learning_profile.baseline_level}.",
+        f"Planner considered stated weak areas: {', '.join(learning_profile.weak_areas)}.",
+        f"Planner used preferred pace: {learning_profile.pace_preference}.",
+    ]
+    roadmap = RoadmapItem(
+        roadmap_id=roadmap_uuid,
+        title=goal_spec.title,
+        version=1,
+        summary=(
+            f"A personalized roadmap for {goal_spec.title} with "
+            f"{len(milestones)} milestones and {len(skillpaths)} skill paths."
+        ),
+        target_outcome=goal_spec.target_outcome,
+        assumptions=assumptions,
+    )
+
+    return {"skillpaths": skillpaths, "roadmap": roadmap}
