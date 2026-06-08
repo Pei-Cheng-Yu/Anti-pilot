@@ -1,4 +1,5 @@
 from app.db.model import (
+    GoalModel,
     LearningContentModel,
     MilestoneModel,
     RoadmapModel,
@@ -90,7 +91,8 @@ def _toposort_skillpaths(skillpaths: list[SkillPathItem]) -> list[SkillPathItem]
         ordered_ids.append(current)
         seen.add(current)
         dependents = [
-            sp for sp in skillpaths
+            sp
+            for sp in skillpaths
             if current in sp.prerequisite_skillpath_ids and sp.skillpath_id not in seen
         ]
         for dep in sorted(dependents, key=lambda sp: index_of[sp.skillpath_id]):
@@ -203,15 +205,36 @@ async def save_roadmap(
     skillpaths: list[SkillPathItem],
     session: AsyncSession,
     title: str | None = None,
+    goal_id: str | None = None,
 ) -> str:
     """Save full planner output (flat) to DB. Called by run_planner tool."""
     user = await session.get(UserModel, user_id)
     if not user:
         session.add(UserModel(user_id=user_id))
 
+    if goal_id is not None:
+        goal_result = await session.execute(
+            select(GoalModel).where(
+                GoalModel.user_id == user_id,
+                GoalModel.goal_id == goal_id,
+            )
+        )
+        if goal_result.scalar_one_or_none() is None:
+            raise ValueError(f"Goal {goal_id} not found for user {user_id}")
+
+        existing_result = await session.execute(
+            select(RoadmapModel).where(
+                RoadmapModel.user_id == user_id,
+                RoadmapModel.goal_id == goal_id,
+            )
+        )
+        if existing_result.scalar_one_or_none() is not None:
+            raise ValueError(f"Roadmap already exists for goal {goal_id}")
+
     session.add(
         RoadmapModel(
             user_id=user_id,
+            goal_id=goal_id,
             roadmap_id=roadmap_id,
             title=title or summary or target_outcome,
             version=version,
@@ -354,7 +377,9 @@ async def save_generated_skillpaths(
     existing_payloads = {}
     for row in rows.values():
         type_counts = {}
-        for existing in sorted(row.learning_contents, key=lambda item: item.order_index):
+        for existing in sorted(
+            row.learning_contents, key=lambda item: item.order_index
+        ):
             type_index = type_counts.get(existing.content_type, 0)
             existing_payloads[existing.content_id] = existing.payload
             existing_content_ids[

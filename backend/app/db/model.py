@@ -35,8 +35,8 @@ class UserModel(Base):
     user_id: Mapped[str] = mapped_column(String, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    goal: Mapped["GoalModel"] = relationship(
-        back_populates="user", uselist=False, cascade="all, delete-orphan"
+    goals: Mapped[list["GoalModel"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
     )
     learning_profile: Mapped["LearningProfileModel"] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan"
@@ -53,15 +53,18 @@ class UserModel(Base):
     learner_memory_notes: Mapped[list["LearnerMemoryNoteModel"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    discovery_conversations: Mapped[list["DiscoveryConversationModel"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class GoalModel(Base):
     __tablename__ = "goals"
+    __table_args__ = (UniqueConstraint("goal_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.user_id"), unique=True
-    )
+    goal_id: Mapped[str] = mapped_column(String)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.user_id"))
     title: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(Text)
     target_outcome: Mapped[str] = mapped_column(Text)
@@ -69,7 +72,8 @@ class GoalModel(Base):
     criteria: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     constraints: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
 
-    user: Mapped["UserModel"] = relationship(back_populates="goal")
+    user: Mapped["UserModel"] = relationship(back_populates="goals")
+    roadmaps: Mapped[list["RoadmapModel"]] = relationship(back_populates="goal")
 
 
 class LearningProfileModel(Base):
@@ -95,9 +99,13 @@ class LearningProfileModel(Base):
 
 class RoadmapModel(Base):
     __tablename__ = "roadmaps"
+    __table_args__ = (UniqueConstraint("goal_id"),)
 
     roadmap_id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.user_id"))
+    goal_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("goals.goal_id"), nullable=True
+    )
     title: Mapped[str] = mapped_column(String, default="")
     version: Mapped[int]
     summary: Mapped[str] = mapped_column(Text)
@@ -105,6 +113,7 @@ class RoadmapModel(Base):
     assumptions: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
 
     user: Mapped["UserModel"] = relationship(back_populates="roadmaps")
+    goal: Mapped["GoalModel"] = relationship(back_populates="roadmaps")
     milestones: Mapped[list["MilestoneModel"]] = relationship(
         back_populates="roadmap", cascade="all, delete-orphan"
     )
@@ -270,3 +279,16 @@ class LearnerMemoryNoteModel(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     user: Mapped["UserModel"] = relationship(back_populates="learner_memory_notes")
+
+
+class DiscoveryConversationModel(Base):
+    __tablename__ = "discovery_conversations"
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.user_id"))
+    goal_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("goals.goal_id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["UserModel"] = relationship(back_populates="discovery_conversations")

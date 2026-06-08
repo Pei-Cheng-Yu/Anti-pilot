@@ -258,6 +258,24 @@ async def test_save_goal(client: Client):
         ]
 
 
+async def test_save_goal_accepts_goal_id(client: Client):
+    goal = make_goal()
+
+    with patch(
+        "app.services.goal.save_goal", new=AsyncMock(return_value=goal)
+    ) as save_goal:
+        await client.call_tool(
+            "goal_save_goal",
+            {
+                "user_id": "user-123",
+                "goal_id": "goal-fastapi",
+                "goal": goal.model_dump(mode="json"),
+            },
+        )
+
+    assert save_goal.await_args.kwargs["goal_id"] == "goal-fastapi"
+
+
 async def test_get_goal(client: Client):
     goal = make_goal()
 
@@ -266,6 +284,20 @@ async def test_get_goal(client: Client):
         data = result_data(result)
         assert data["title"] == "Learn FastAPI"
         assert data["target_outcome"] == "Build a production-style FastAPI project."
+
+
+async def test_get_goal_accepts_goal_id(client: Client):
+    goal = make_goal()
+
+    with patch(
+        "app.services.goal.get_goal", new=AsyncMock(return_value=goal)
+    ) as get_goal:
+        await client.call_tool(
+            "goal_get_goal",
+            {"user_id": "user-123", "goal_id": "goal-fastapi"},
+        )
+
+    assert get_goal.await_args.kwargs["goal_id"] == "goal-fastapi"
 
 
 async def test_get_goal_not_found(client: Client):

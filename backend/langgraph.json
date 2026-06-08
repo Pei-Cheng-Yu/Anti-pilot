@@ -2,7 +2,9 @@
   "dependencies": ["."],
   "graphs": {
     "planner": "app.langgraph.planner.graphs.generate_roadmap.graph:build_planner_graph",
-    "quick_reviewer": "app.langgraph.planner.graphs.generate_roadmap.graph:build_planner_graph"
+    "quick_reviewer": "app.langgraph.planner.graphs.generate_roadmap.graph:build_planner_graph",
+    "learning_director": "app.langgraph.learning_director.agent:graph",
+    "discovery_agent": "app.langgraph.discovery_agent.agent:graph"
   },
   "env": "../.env"
 }
