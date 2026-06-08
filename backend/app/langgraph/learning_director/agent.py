@@ -63,12 +63,12 @@ def _context_marker_from_state(state: dict | None, marker: str) -> str | None:
     if not state:
         return None
 
-    pattern = re.compile(rf"^{re.escape(marker)}:\s*(\S+)\s*$")
+    pattern = re.compile(rf"\b{re.escape(marker)}:\s*([^\s,;)]+)")
     for message in reversed(state.get("messages", [])):
         for line in _message_content(message).splitlines():
-            match = pattern.match(line.strip())
+            match = pattern.search(line.strip())
             if match:
-                return match.group(1)
+                return match.group(1).rstrip(".")
     return None
 
 

@@ -161,6 +161,16 @@ def test_learning_director_local_tools_recover_ids_from_state_messages():
     assert tool_goal_id(runtime, None) == "goal-from-message"
 
 
+def test_learning_director_local_tools_recover_inline_ids_from_state_messages():
+    runtime = _runtime_with_state_messages(
+        "Use CURRENT_USER_ID: user-from-message and "
+        "CURRENT_GOAL_ID: goal-from-message."
+    )
+
+    assert tool_user_id(runtime, None) == "user-from-message"
+    assert tool_goal_id(runtime, None) == "goal-from-message"
+
+
 def test_learning_director_local_tools_recover_ids_from_configurable():
     runtime = _runtime_with_configurable(
         {"user_id": "user-from-config", "goal_id": "goal-from-config"}
