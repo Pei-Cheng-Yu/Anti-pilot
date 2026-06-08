@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from app.mcp.server import mcp
+from app.mcp.tools import learning_memory as learning_memory_tools
 from app.schema.entities import (
     CodeCorrectionResult,
     CodeSubmissionResult,
@@ -25,6 +26,7 @@ from app.schema.entities import (
     SkillPathItem,
 )
 from app.schema.enums import AttemptCorrectness
+from app.services import memory_service
 from app.validators.schemas import CodeValidationResult
 from fastmcp import Client
 
@@ -158,6 +160,11 @@ async def test_all_tools_registered(client: Client):
         "roadmap_update_skillpath",
     }
     assert expected.issubset(names)
+
+
+def test_learning_memory_mcp_uses_public_memory_service():
+    assert learning_memory_tools.service is memory_service
+    assert not hasattr(learning_memory_tools, "hint_service")
 
 
 async def test_submit_code_attempt_tool_accepts_validation_request(client: Client):

@@ -20,14 +20,25 @@ from app.schema.entities import (
     LearnerMemoryNote,
     LearningMemoryContext,
     MemoryConsolidationJudgment,
+    MergeMemoryNotesInput,
+    MergeMemoryNotesResult,
     RecordCodingProblemAttemptInput,
+    ResolveMemoryConflictInput,
+    ResolveMemoryConflictResult,
     RetrieveLearningMemoryInput,
     SkillMasteryState,
     TestCaseResult,
     UpdateMemoryNoteInput,
 )
-from app.schema.enums import AttemptCorrectness, MasteryStatus, MemoryStatus, MemoryType
+from app.schema.enums import (
+    AttemptCorrectness,
+    MasteryStatus,
+    MemoryIntegrityAction,
+    MemoryStatus,
+    MemoryType,
+)
 from app.services.learning_memory_retriever import get_memory_note_candidates
+from app.services.memory_integrity import check_memory_write_integrity
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -282,6 +293,13 @@ def _clamp_delta(value: float, *, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+def _merge_unique(*values: list[str] | None) -> list[str]:
+    merged: set[str] = set()
+    for items in values:
+        merged.update(_normalize_terms(items or []))
+    return sorted(merged)
+
+
 async def _refresh_memory_note_index(row: LearnerMemoryNoteModel) -> None:
     row.embedding = await _async_embed_text(
         _build_note_embedding_text(
@@ -333,20 +351,24 @@ async def _get_success_evidence_attempt_ids(
 
 
 async def _create_memory_note_row(
-    payload: AddMemoryNoteInput, session: AsyncSession
+    payload: AddMemoryNoteInput,
+    session: AsyncSession,
+    *,
+    embedding: list[float] | None = None,
 ) -> LearnerMemoryNoteModel:
     user = await session.get(UserModel, payload.user_id)
     if not user:
         session.add(UserModel(user_id=payload.user_id))
 
-    embedding = await _async_embed_text(
-        _build_note_embedding_text(
-            title=payload.title,
-            summary=payload.summary,
-            tags=payload.tags,
-            linked_concepts=payload.linked_concepts,
+    if embedding is None:
+        embedding = await _async_embed_text(
+            _build_note_embedding_text(
+                title=payload.title,
+                summary=payload.summary,
+                tags=payload.tags,
+                linked_concepts=payload.linked_concepts,
+            )
         )
-    )
     row = LearnerMemoryNoteModel(
         memory_id=str(uuid4()),
         user_id=payload.user_id,
@@ -378,11 +400,176 @@ async def _create_memory_note_row(
     return row
 
 
+async def _reinforce_memory_note_row(
+    row: LearnerMemoryNoteModel, payload: AddMemoryNoteInput
+) -> LearnerMemoryNoteModel:
+    row.tags = _merge_unique(row.tags, payload.tags)
+    row.linked_concepts = _merge_unique(row.linked_concepts, payload.linked_concepts)
+    row.linked_skillpath_ids = _merge_unique(
+        row.linked_skillpath_ids, payload.linked_skillpath_ids
+    )
+    row.linked_content_ids = _merge_unique(
+        row.linked_content_ids, payload.linked_content_ids
+    )
+    row.evidence_attempt_ids = _merge_unique(
+        row.evidence_attempt_ids, payload.evidence_attempt_ids
+    )
+    row.salience_score = _clamp_salience(
+        max(float(row.salience_score or 0.0), payload.salience_score)
+    )
+    if row.status == MemoryStatus.WATCH.value and payload.status == MemoryStatus.ACTIVE:
+        row.status = MemoryStatus.ACTIVE.value
+    row.last_seen_at = _utcnow()
+    await _refresh_memory_note_index(row)
+    return row
+
+
+def _safe_memory_integrity_text_update(value: Any, *, max_length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned or len(cleaned) > max_length:
+        return None
+    return cleaned
+
+
+async def _apply_safe_memory_integrity_field_updates(
+    row: LearnerMemoryNoteModel,
+    field_updates: dict[str, Any] | None,
+) -> LearnerMemoryNoteModel:
+    if not field_updates:
+        return row
+
+    changed = False
+    title = _safe_memory_integrity_text_update(
+        field_updates.get("title"),
+        max_length=180,
+    )
+    if title is not None:
+        row.title = title
+        changed = True
+
+    summary = _safe_memory_integrity_text_update(
+        field_updates.get("summary"),
+        max_length=1200,
+    )
+    if summary is not None:
+        row.summary = summary
+        changed = True
+
+    if changed:
+        await _refresh_memory_note_index(row)
+    return row
+
+
+async def apply_memory_integrity_decision(
+    payload: AddMemoryNoteInput,
+    decision,
+    session: AsyncSession,
+    *,
+    embedding: list[float] | None = None,
+) -> LearnerMemoryNoteModel:
+    action = decision.action
+    target_memory_ids = decision.target_memory_ids
+
+    if (
+        action in {MemoryIntegrityAction.UPDATE_EXISTING, MemoryIntegrityAction.MERGE}
+        and len(target_memory_ids) == 1
+    ):
+        row = await _get_owned_memory_note_row(
+            target_memory_ids[0],
+            payload.user_id,
+            session,
+        )
+        row = await _reinforce_memory_note_row(row, payload)
+        return await _apply_safe_memory_integrity_field_updates(
+            row,
+            decision.field_updates,
+        )
+
+    if action == MemoryIntegrityAction.SKIP_DUPLICATE and target_memory_ids:
+        return await _get_owned_memory_note_row(
+            target_memory_ids[0],
+            payload.user_id,
+            session,
+        )
+
+    if action == MemoryIntegrityAction.MERGE and len(target_memory_ids) > 1:
+        primary_id = target_memory_ids[0]
+        duplicate_ids = target_memory_ids[1:]
+        await merge_memory_notes(
+            MergeMemoryNotesInput(
+                user_id=payload.user_id,
+                primary_memory_id=primary_id,
+                duplicate_memory_ids=duplicate_ids,
+                rationale=decision.rationale,
+            ),
+            session,
+        )
+        primary = await _get_owned_memory_note_row(primary_id, payload.user_id, session)
+        primary = await _reinforce_memory_note_row(primary, payload)
+        return await _apply_safe_memory_integrity_field_updates(
+            primary,
+            decision.field_updates,
+        )
+
+    if action == MemoryIntegrityAction.FLAG_CONFLICT and target_memory_ids:
+        row = await _create_memory_note_row(payload, session, embedding=embedding)
+        row = await _apply_safe_memory_integrity_field_updates(
+            row,
+            decision.field_updates,
+        )
+        now = _utcnow()
+        for memory_id in target_memory_ids:
+            target = await _get_owned_memory_note_row(
+                memory_id,
+                payload.user_id,
+                session,
+            )
+            target.status = MemoryStatus.WATCH.value
+            target.salience_score = _clamp_salience(
+                min(float(target.salience_score or 0.0), 0.45)
+            )
+            target.last_seen_at = now
+        return row
+
+    row = await _create_memory_note_row(payload, session, embedding=embedding)
+    return await _apply_safe_memory_integrity_field_updates(
+        row,
+        decision.field_updates,
+    )
+
+
+async def _create_or_reinforce_memory_note_row(
+    payload: AddMemoryNoteInput, session: AsyncSession
+) -> LearnerMemoryNoteModel:
+    embedding = await _async_embed_text(
+        _build_note_embedding_text(
+            title=payload.title,
+            summary=payload.summary,
+            tags=payload.tags,
+            linked_concepts=payload.linked_concepts,
+        )
+    )
+    decision = await check_memory_write_integrity(
+        payload,
+        session,
+        incoming_embedding=embedding,
+    )
+    return await apply_memory_integrity_decision(
+        payload,
+        decision,
+        session,
+        embedding=embedding,
+    )
+
+
 async def add_memory_note(
     payload: AddMemoryNoteInput, session: AsyncSession
 ) -> LearnerMemoryNote:
-    row = await _create_memory_note_row(payload, session)
+    row = await _create_or_reinforce_memory_note_row(payload, session)
     await session.commit()
+    await session.refresh(row)
     return _to_memory_note(row)
 
 
@@ -460,6 +647,104 @@ async def delete_memory_note(
             raise ValueError(f"Memory note {memory_id} not found")
     await session.delete(row)
     await session.commit()
+
+
+async def merge_memory_notes(
+    payload: MergeMemoryNotesInput, session: AsyncSession
+) -> MergeMemoryNotesResult:
+    if not payload.duplicate_memory_ids:
+        raise ValueError("At least one duplicate memory ID is required")
+    primary = await _get_owned_memory_note_row(
+        payload.primary_memory_id, payload.user_id, session
+    )
+    duplicate_rows = [
+        await _get_owned_memory_note_row(memory_id, payload.user_id, session)
+        for memory_id in payload.duplicate_memory_ids
+    ]
+    for duplicate in duplicate_rows:
+        if duplicate.memory_type != primary.memory_type:
+            raise ValueError("Only notes of the same memory type can be merged")
+        primary.tags = _merge_unique(primary.tags, duplicate.tags)
+        primary.linked_concepts = _merge_unique(
+            primary.linked_concepts, duplicate.linked_concepts
+        )
+        primary.linked_skillpath_ids = _merge_unique(
+            primary.linked_skillpath_ids, duplicate.linked_skillpath_ids
+        )
+        primary.linked_content_ids = _merge_unique(
+            primary.linked_content_ids, duplicate.linked_content_ids
+        )
+        primary.evidence_attempt_ids = _merge_unique(
+            primary.evidence_attempt_ids, duplicate.evidence_attempt_ids
+        )
+        primary.salience_score = _clamp_salience(
+            max(
+                float(primary.salience_score or 0.0),
+                float(duplicate.salience_score or 0.0),
+            )
+        )
+        duplicate.status = MemoryStatus.RESOLVED.value
+        duplicate.last_seen_at = _utcnow()
+
+    primary.last_seen_at = _utcnow()
+    await _refresh_memory_note_index(primary)
+    await session.commit()
+    await session.refresh(primary)
+    for duplicate in duplicate_rows:
+        await session.refresh(duplicate)
+    return MergeMemoryNotesResult(
+        primary_note=_to_memory_note(primary),
+        merged_memory_ids=[
+            primary.memory_id,
+            *[row.memory_id for row in duplicate_rows],
+        ],
+        resolved_memory_ids=[row.memory_id for row in duplicate_rows],
+    )
+
+
+async def resolve_memory_conflict(
+    payload: ResolveMemoryConflictInput, session: AsyncSession
+) -> ResolveMemoryConflictResult:
+    primary = await _get_owned_memory_note_row(
+        payload.primary_memory_id, payload.user_id, session
+    )
+    conflicting = await _get_owned_memory_note_row(
+        payload.conflicting_memory_id, payload.user_id, session
+    )
+    action = MemoryIntegrityAction.KEEP_BOTH_SCOPED
+    primary_type = MemoryType(primary.memory_type)
+    conflicting_type = MemoryType(conflicting.memory_type)
+    now = _utcnow()
+
+    if {
+        primary_type,
+        conflicting_type,
+    } == {MemoryType.MASTERY_SIGNAL, MemoryType.ERROR_PATTERN}:
+        error_row = primary if primary_type == MemoryType.ERROR_PATTERN else conflicting
+        error_row.status = MemoryStatus.WATCH.value
+        error_row.salience_score = _clamp_salience(
+            min(float(error_row.salience_score or 0.0), 0.45)
+        )
+        error_row.last_seen_at = now
+        action = MemoryIntegrityAction.FLAG_CONFLICT
+    elif primary_type == conflicting_type == MemoryType.PREFERENCE_SIGNAL:
+        conflicting.status = MemoryStatus.WATCH.value
+        conflicting.salience_score = _clamp_salience(
+            min(float(conflicting.salience_score or 0.0), 0.35)
+        )
+        conflicting.last_seen_at = now
+        action = MemoryIntegrityAction.FLAG_CONFLICT
+
+    primary.last_seen_at = now
+    await session.commit()
+    await session.refresh(primary)
+    await session.refresh(conflicting)
+    return ResolveMemoryConflictResult(
+        primary_note=_to_memory_note(primary),
+        conflicting_note=_to_memory_note(conflicting),
+        action=action,
+        rationale=payload.rationale,
+    )
 
 
 async def record_coding_problem_attempt(
@@ -709,7 +994,7 @@ async def consolidate_attempt_memory(
             await _refresh_memory_note_index(matching_row)
             updated_notes.append(_to_memory_note(matching_row))
         else:
-            created_row = await _create_memory_note_row(
+            created_row = await _create_or_reinforce_memory_note_row(
                 AddMemoryNoteInput(
                     user_id=user_id,
                     memory_type=MemoryType.ERROR_PATTERN,
@@ -805,7 +1090,7 @@ async def consolidate_attempt_memory(
                 )
                 updated_notes.append(_to_memory_note(heuristic_row))
             else:
-                heuristic_created = await _create_memory_note_row(
+                heuristic_created = await _create_or_reinforce_memory_note_row(
                     AddMemoryNoteInput(
                         user_id=user_id,
                         memory_type=MemoryType.HEURISTIC,
@@ -967,7 +1252,7 @@ async def consolidate_attempt_memory(
             )
             updated_notes.append(_to_memory_note(matching_row))
         else:
-            created_row = await _create_memory_note_row(
+            created_row = await _create_or_reinforce_memory_note_row(
                 AddMemoryNoteInput(
                     user_id=user_id,
                     memory_type=MemoryType.MASTERY_SIGNAL,
