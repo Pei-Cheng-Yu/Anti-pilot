@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from app.adk_agents.content_generator.agent import generate_skillpath_content
 from app.adk_agents.content_generator.schemas import AdkContentGenerationRequest
+from app.advisors.memory_advisors import advise_memory_integrity
 from app.core.config import settings
 from app.db import session as db_session_module
 from app.db.model import (
@@ -26,21 +27,37 @@ from app.langgraph.content_generation.graphs.generate_learning_content.graph imp
     build_learning_content_graph,
 )
 from app.schema.entities import (
+    AddMemoryNoteInput,
     ContentGenerationPlan,
     GoalSpec,
+    HintRequest,
     LearnerMemoryNote,
     LearningMemoryContext,
     LearningProfile,
+    MemoryRerankRequest,
     MilestoneItem,
     SkillPathItem,
     TestCaseResult,
 )
-from app.schema.enums import AttemptCorrectness, ExampleStyle, MemoryType, PracticeMode
+from app.schema.enums import (
+    AttemptCorrectness,
+    ExampleStyle,
+    HintLevel,
+    MemoryIntegrityAction,
+    MemoryRerankPurpose,
+    MemoryStatus,
+    MemoryType,
+    PracticeMode,
+)
 from app.services import code_correction as code_correction_service
+from app.services import learning_memory as learning_memory_service
+from app.services import memory_hint as memory_hint_service
+from app.services import memory_integrity as memory_integrity_service
+from app.services import memory_rerank_policy as memory_rerank_service
 from app.validators.deepagent_validator import validate_code_submission
 from app.validators.schemas import CodeValidationRequest
 from dotenv import load_dotenv
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -120,6 +137,82 @@ def _memory_context() -> LearningMemoryContext:
         teaching_heuristics=[heuristic],
         relevant_notes=[async_error, heuristic],
     )
+
+
+def _noisy_rerank_candidates() -> list[LearnerMemoryNote]:
+    created_at = datetime.now(timezone.utc)
+    return [
+        LearnerMemoryNote(
+            memory_id="live-rerank-await-error",
+            user_id="live-rerank-user",
+            memory_type=MemoryType.ERROR_PATTERN,
+            title="FastAPI route missing await",
+            summary=(
+                "Learner repeatedly forgets to await async database calls in "
+                "FastAPI route handlers."
+            ),
+            tags=["fastapi", "async", "await"],
+            linked_concepts=["fastapi.async", "missing await"],
+            salience_score=0.95,
+            created_at=created_at,
+        ),
+        LearnerMemoryNote(
+            memory_id="live-rerank-await-heuristic",
+            user_id="live-rerank-user",
+            memory_type=MemoryType.HEURISTIC,
+            title="Trace async boundaries before returning",
+            summary=(
+                "Teach the learner to identify coroutine-producing calls and "
+                "wait for them before returning a response."
+            ),
+            tags=["fastapi", "async", "teaching"],
+            linked_concepts=["fastapi.async", "missing await"],
+            salience_score=0.85,
+            created_at=created_at,
+        ),
+        LearnerMemoryNote(
+            memory_id="live-rerank-coroutine-background",
+            user_id="live-rerank-user",
+            memory_type=MemoryType.BACKGROUND,
+            title="Python coroutines are awaitable",
+            summary=(
+                "The learner benefits from short recaps that async functions "
+                "return awaitable coroutine objects until awaited."
+            ),
+            tags=["python", "async", "coroutine"],
+            linked_concepts=["python.async", "coroutine"],
+            salience_score=0.65,
+            created_at=created_at,
+        ),
+        LearnerMemoryNote(
+            memory_id="live-rerank-sql-join-noise",
+            user_id="live-rerank-user",
+            memory_type=MemoryType.ERROR_PATTERN,
+            title="SQL JOIN condition mistake",
+            summary=(
+                "Learner previously confused SQL JOIN ON clauses with WHERE "
+                "filters in a database query exercise."
+            ),
+            tags=["sql", "join", "database"],
+            linked_concepts=["sql.join"],
+            salience_score=0.9,
+            created_at=created_at,
+        ),
+        LearnerMemoryNote(
+            memory_id="live-rerank-visual-preference",
+            user_id="live-rerank-user",
+            memory_type=MemoryType.PREFERENCE_SIGNAL,
+            title="Learner likes examples first",
+            summary=(
+                "Learner prefers a concrete example before abstract explanation "
+                "when learning backend concepts."
+            ),
+            tags=["preference", "examples"],
+            linked_concepts=["teaching.preference"],
+            salience_score=0.7,
+            created_at=created_at,
+        ),
+    ]
 
 
 def _content_request() -> AdkContentGenerationRequest:
@@ -354,6 +447,195 @@ async def _cleanup_live_graph_memory(seed: dict) -> None:
         )
         await session.commit()
     await engine.dispose()
+
+
+async def _run_live_hint_advisor(seed: dict):
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        hint = await memory_hint_service.generate_memory_aware_hint(
+            HintRequest(
+                user_id=seed["user_id"],
+                skillpath_id=seed["skillpath_id"],
+                content_id="cp-live-fastapi-await",
+                task_prompt=(
+                    "Fix the FastAPI route handler so the async database call is "
+                    "properly awaited before returning the response."
+                ),
+                submitted_code=(
+                    "async def get_product(product_id: int):\n"
+                    "    product = get_product_from_db(product_id)\n"
+                    "    return {'product': product}\n"
+                ),
+                concept_keys=["fastapi.async", "missing await"],
+                validation_feedback=(
+                    "RuntimeWarning: coroutine 'get_product_from_db' was never awaited"
+                ),
+                hint_level=HintLevel.NUDGE,
+            ),
+            session,
+        )
+    await engine.dispose()
+    return hint
+
+
+async def _seed_live_integrity_memory() -> dict:
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    user_id = f"live-integrity-memory-{uuid4()}"
+    skillpath_id = f"sp-live-integrity-fastapi-{uuid4()}"
+    content_id = f"cp-live-integrity-await-{uuid4()}"
+    existing_memory_id = f"mem-live-integrity-await-{uuid4()}"
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    async with session_factory() as session:
+        session.add(UserModel(user_id=user_id))
+        session.add(
+            LearnerMemoryNoteModel(
+                memory_id=existing_memory_id,
+                user_id=user_id,
+                memory_type=MemoryType.ERROR_PATTERN.value,
+                title="FastAPI route missing await",
+                summary=(
+                    "Learner repeatedly forgets to await async database calls "
+                    "inside FastAPI route handlers."
+                ),
+                tags=["fastapi", "async", "await", "route"],
+                linked_concepts=["fastapi.async", "missing await"],
+                linked_skillpath_ids=[skillpath_id],
+                linked_content_ids=[content_id],
+                evidence_attempt_ids=["live-integrity-attempt-a"],
+                embedding=[0.0] * 3072,
+                search_text=(
+                    "FastAPI route missing await async route handler "
+                    "fastapi.async missing await"
+                ),
+                salience_score=0.92,
+                status=MemoryStatus.ACTIVE.value,
+                created_at=now,
+                last_seen_at=now,
+            )
+        )
+        await session.commit()
+
+    await engine.dispose()
+    return {
+        "user_id": user_id,
+        "skillpath_id": skillpath_id,
+        "content_id": content_id,
+        "existing_memory_id": existing_memory_id,
+    }
+
+
+async def _cleanup_live_integrity_memory(seed: dict) -> None:
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        await session.execute(
+            delete(LearnerMemoryNoteModel).where(
+                LearnerMemoryNoteModel.user_id == seed["user_id"]
+            )
+        )
+        await session.execute(
+            delete(UserModel).where(UserModel.user_id == seed["user_id"])
+        )
+        await session.commit()
+    await engine.dispose()
+
+
+async def _run_live_integrity_advisor(seed: dict):
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        before_count = await session.scalar(
+            select(func.count())
+            .select_from(LearnerMemoryNoteModel)
+            .where(LearnerMemoryNoteModel.user_id == seed["user_id"])
+        )
+        decision = await memory_integrity_service.check_memory_write_integrity(
+            AddMemoryNoteInput(
+                user_id=seed["user_id"],
+                memory_type=MemoryType.ERROR_PATTERN,
+                title="Repeated missing await in FastAPI route",
+                summary=(
+                    "The learner again submitted a FastAPI route that returns "
+                    "before awaiting an async database call."
+                ),
+                tags=["fastapi", "async", "await"],
+                linked_concepts=["fastapi.async", "missing await"],
+                linked_skillpath_ids=[seed["skillpath_id"]],
+                linked_content_ids=[seed["content_id"]],
+                evidence_attempt_ids=["live-integrity-attempt-b"],
+                salience_score=0.88,
+            ),
+            session,
+        )
+        after_count = await session.scalar(
+            select(func.count())
+            .select_from(LearnerMemoryNoteModel)
+            .where(LearnerMemoryNoteModel.user_id == seed["user_id"])
+        )
+    await engine.dispose()
+    return decision, before_count, after_count
+
+
+async def _run_live_integrity_conflict_application(seed: dict):
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    payload = AddMemoryNoteInput(
+        user_id=seed["user_id"],
+        memory_type=MemoryType.MASTERY_SIGNAL,
+        title="FastAPI await improvement",
+        summary=(
+            "The learner now consistently awaits coroutine-producing FastAPI "
+            "database calls before returning route responses."
+        ),
+        tags=["fastapi", "async", "await", "mastery"],
+        linked_concepts=["fastapi.async", "missing await"],
+        linked_skillpath_ids=[seed["skillpath_id"]],
+        linked_content_ids=[seed["content_id"]],
+        evidence_attempt_ids=["live-integrity-mastery-attempt"],
+        salience_score=0.76,
+    )
+    async with session_factory() as session:
+        candidates, evidence = (
+            await memory_integrity_service.find_memory_integrity_candidates(
+                payload,
+                session,
+            )
+        )
+        recommendation = await advise_memory_integrity(
+            payload,
+            [memory_integrity_service._row_to_memory_note(row) for row in candidates],
+            evidence,
+            [MemoryIntegrityAction.FLAG_CONFLICT],
+        )
+        decision = memory_integrity_service.validate_advisor_recommendation(
+            recommendation,
+            candidate_memory_ids={row.memory_id for row in candidates},
+            allowed_actions=[MemoryIntegrityAction.FLAG_CONFLICT],
+        )
+        decision.evidence = evidence
+        applied_row = await learning_memory_service.apply_memory_integrity_decision(
+            payload,
+            decision,
+            session,
+        )
+        await session.commit()
+        await session.refresh(applied_row)
+        target_row = await session.get(
+            LearnerMemoryNoteModel,
+            seed["existing_memory_id"],
+        )
+        all_rows = await session.execute(
+            select(LearnerMemoryNoteModel).where(
+                LearnerMemoryNoteModel.user_id == seed["user_id"]
+            )
+        )
+        rows = list(all_rows.scalars())
+    await engine.dispose()
+    return decision, applied_row, target_row, rows
 
 
 async def _seed_product_path_memory_flow() -> dict:
@@ -659,6 +941,183 @@ def test_live_learning_content_graph_retrieves_memory_and_invokes_adk():
     finally:
         asyncio.run(_dispose_shared_db_engine())
         asyncio.run(_cleanup_live_graph_memory(seed))
+
+
+def test_live_memory_hint_invokes_real_advisor_and_selects_seeded_memory():
+    _skip_unless_live_enabled()
+    old_hint_flag = os.environ.get("ENABLE_MEMORY_HINT_ADVISOR")
+    old_rerank_flag = os.environ.get("ENABLE_MEMORY_RERANK_ADVISOR")
+    os.environ["ENABLE_MEMORY_HINT_ADVISOR"] = "1"
+    os.environ["ENABLE_MEMORY_RERANK_ADVISOR"] = "1"
+    seed = asyncio.run(_seed_live_graph_memory())
+    try:
+        hint = asyncio.run(_run_live_hint_advisor(seed))
+        rendered = hint.model_dump_json().lower()
+
+        print("\n=== LIVE MEMORY HINT ADVISOR RESULT ===")
+        print(hint.model_dump_json(indent=2))
+
+        assert seed["error_memory_id"] in hint.selected_memory_ids
+        assert hint.hint
+        assert FAKE_CONTENT_MARKER.lower() not in rendered
+        assert "sql" not in rendered
+        assert any(term in rendered for term in ("await", "async", "coroutine"))
+        assert "await get_product_from_db(product_id)" not in hint.hint.lower()
+    finally:
+        asyncio.run(_cleanup_live_graph_memory(seed))
+        if old_hint_flag is None:
+            os.environ.pop("ENABLE_MEMORY_HINT_ADVISOR", None)
+        else:
+            os.environ["ENABLE_MEMORY_HINT_ADVISOR"] = old_hint_flag
+        if old_rerank_flag is None:
+            os.environ.pop("ENABLE_MEMORY_RERANK_ADVISOR", None)
+        else:
+            os.environ["ENABLE_MEMORY_RERANK_ADVISOR"] = old_rerank_flag
+
+
+def test_live_memory_rerank_advisor_filters_noisy_candidates_for_multiple_purposes():
+    _skip_unless_live_enabled()
+    old_rerank_flag = os.environ.get("ENABLE_MEMORY_RERANK_ADVISOR")
+    os.environ["ENABLE_MEMORY_RERANK_ADVISOR"] = "1"
+    try:
+        candidates = _noisy_rerank_candidates()
+        content_result = asyncio.run(
+            memory_rerank_service.arerank_memories(
+                MemoryRerankRequest(
+                    purpose=MemoryRerankPurpose.CONTENT_GENERATION,
+                    task_context=(
+                        "Generate learning content for FastAPI async route "
+                        "handlers and missing await mistakes."
+                    ),
+                    learner_context=(
+                        "Learner has repeated missing-await errors and prefers "
+                        "examples before abstract explanation."
+                    ),
+                    candidate_memories=candidates,
+                    max_selected=3,
+                )
+            )
+        )
+        correction_result = asyncio.run(
+            memory_rerank_service.arerank_memories(
+                MemoryRerankRequest(
+                    purpose=MemoryRerankPurpose.CODE_CORRECTION,
+                    task_context=(
+                        "Correct submitted FastAPI code that produced "
+                        "RuntimeWarning: coroutine was never awaited."
+                    ),
+                    learner_context=(
+                        "The current feedback should focus on the concrete "
+                        "missing-await mistake."
+                    ),
+                    candidate_memories=candidates,
+                    max_selected=3,
+                )
+            )
+        )
+
+        print("\n=== LIVE MEMORY RERANK CONTENT GENERATION RESULT ===")
+        print(content_result.model_dump_json(indent=2))
+        print("\n=== LIVE MEMORY RERANK CODE CORRECTION RESULT ===")
+        print(correction_result.model_dump_json(indent=2))
+
+        content_ids = set(content_result.selected_memory_ids)
+        correction_ids = set(correction_result.selected_memory_ids)
+
+        assert "live-rerank-await-error" in content_ids
+        assert "live-rerank-await-error" in correction_ids
+        assert "live-rerank-sql-join-noise" not in content_ids
+        assert "live-rerank-sql-join-noise" not in correction_ids
+        assert content_result.purpose == MemoryRerankPurpose.CONTENT_GENERATION
+        assert correction_result.purpose == MemoryRerankPurpose.CODE_CORRECTION
+        assert content_result.guidance
+        assert correction_result.guidance
+    finally:
+        if old_rerank_flag is None:
+            os.environ.pop("ENABLE_MEMORY_RERANK_ADVISOR", None)
+        else:
+            os.environ["ENABLE_MEMORY_RERANK_ADVISOR"] = old_rerank_flag
+
+
+def test_live_memory_integrity_advisor_recommends_bounded_duplicate_action():
+    _skip_unless_live_enabled()
+    old_integrity_flag = os.environ.get("ENABLE_MEMORY_INTEGRITY_ADVISOR")
+    os.environ["ENABLE_MEMORY_INTEGRITY_ADVISOR"] = "1"
+    seed = asyncio.run(_seed_live_integrity_memory())
+    try:
+        decision, before_count, after_count = asyncio.run(
+            _run_live_integrity_advisor(seed)
+        )
+
+        print("\n=== LIVE MEMORY INTEGRITY ADVISOR RESULT ===")
+        print(decision.model_dump_json(indent=2))
+
+        assert decision.advisor_used is True
+        assert decision.action in {
+            MemoryIntegrityAction.UPDATE_EXISTING,
+            MemoryIntegrityAction.MERGE,
+            MemoryIntegrityAction.SKIP_DUPLICATE,
+        }
+        assert seed["existing_memory_id"] in decision.target_memory_ids
+        assert set(decision.target_memory_ids) <= {seed["existing_memory_id"]}
+        assert decision.confidence >= 0.6
+        assert before_count == 1
+        assert after_count == before_count
+        assert any(
+            item.candidate_memory_id == seed["existing_memory_id"]
+            for item in decision.evidence
+        )
+    finally:
+        asyncio.run(_cleanup_live_integrity_memory(seed))
+        if old_integrity_flag is None:
+            os.environ.pop("ENABLE_MEMORY_INTEGRITY_ADVISOR", None)
+        else:
+            os.environ["ENABLE_MEMORY_INTEGRITY_ADVISOR"] = old_integrity_flag
+
+
+def test_live_memory_integrity_advisor_conflict_decision_is_service_applied():
+    _skip_unless_live_enabled()
+    old_integrity_flag = os.environ.get("ENABLE_MEMORY_INTEGRITY_ADVISOR")
+    os.environ["ENABLE_MEMORY_INTEGRITY_ADVISOR"] = "1"
+    seed = asyncio.run(_seed_live_integrity_memory())
+    try:
+        decision, applied_row, target_row, rows = asyncio.run(
+            _run_live_integrity_conflict_application(seed)
+        )
+
+        print("\n=== LIVE MEMORY INTEGRITY CONFLICT APPLICATION RESULT ===")
+        print(decision.model_dump_json(indent=2))
+        print(
+            json.dumps(
+                {
+                    "applied_memory_id": applied_row.memory_id,
+                    "applied_memory_type": applied_row.memory_type,
+                    "target_memory_id": target_row.memory_id if target_row else None,
+                    "target_status": target_row.status if target_row else None,
+                    "target_salience": (
+                        target_row.salience_score if target_row else None
+                    ),
+                    "row_count": len(rows),
+                },
+                indent=2,
+            )
+        )
+
+        assert decision.advisor_used is True
+        assert decision.action == MemoryIntegrityAction.FLAG_CONFLICT
+        assert seed["existing_memory_id"] in decision.target_memory_ids
+        assert set(decision.target_memory_ids) <= {seed["existing_memory_id"]}
+        assert applied_row.memory_type == MemoryType.MASTERY_SIGNAL.value
+        assert target_row is not None
+        assert target_row.status == MemoryStatus.WATCH.value
+        assert target_row.salience_score <= 0.45
+        assert len(rows) == 2
+    finally:
+        asyncio.run(_cleanup_live_integrity_memory(seed))
+        if old_integrity_flag is None:
+            os.environ.pop("ENABLE_MEMORY_INTEGRITY_ADVISOR", None)
+        else:
+            os.environ["ENABLE_MEMORY_INTEGRITY_ADVISOR"] = old_integrity_flag
 
 
 def test_live_product_path_bad_attempt_creates_memory_then_content_graph_uses_it():

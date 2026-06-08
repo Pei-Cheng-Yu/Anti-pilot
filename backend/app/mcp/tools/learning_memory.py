@@ -2,6 +2,8 @@ from app.db.session import get_session
 from app.schema.entities import (
     AddMemoryNoteInput,
     CodingProblemAttempt,
+    HintRequest,
+    HintResponse,
     LearnerMemoryNote,
     LearningMemoryContext,
     RecordAndConsolidateAttemptResult,
@@ -10,7 +12,7 @@ from app.schema.entities import (
     SkillMasteryState,
     UpdateMemoryNoteInput,
 )
-from app.services import learning_memory as service
+from app.services import memory_service as service
 from fastmcp import FastMCP
 
 learning_memory_mcp = FastMCP("learning_memory")
@@ -113,3 +115,13 @@ async def retrieve_learning_memory(
     """
     async with get_session() as session:
         return await service.retrieve_learning_memory(query, session)
+
+
+@learning_memory_mcp.tool()
+async def generate_memory_aware_hint(request: HintRequest) -> HintResponse:
+    """
+    Generate a learner-facing hint using retrieved learner memory and the
+    configured memory advisor path.
+    """
+    async with get_session() as session:
+        return await service.generate_memory_aware_hint(request, session)

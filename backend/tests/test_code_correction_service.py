@@ -15,12 +15,20 @@ from app.db.model import (
 from app.schema.entities import (
     AddMemoryNoteInput,
     CodeCorrectionRequest,
+    MemoryRerankResult,
     RetrieveLearningMemoryInput,
+    SelectedMemoryMetadata,
     TestCaseResult,
 )
-from app.schema.enums import AttemptCorrectness, MemoryType
+from app.schema.enums import (
+    AttemptCorrectness,
+    MemoryRerankPurpose,
+    MemoryType,
+    TeachingAction,
+)
 from app.services import code_correction as code_correction_service
 from app.services import learning_memory as learning_memory_service
+from app.services import memory_service
 from app.validators.schemas import CodeValidationRequest, CodeValidationResult
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -228,6 +236,73 @@ async def test_process_code_correction_uses_runtime_error_and_updates_memory(
         "fastapi.async",
         "fastapi.routing",
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_code_correction_reranks_retrieved_memory_for_correction(
+    monkeypatch, db_session, test_user: str
+):
+    seeded_note = await learning_memory_service.add_memory_note(
+        AddMemoryNoteInput(
+            user_id=test_user,
+            memory_type=MemoryType.ERROR_PATTERN,
+            title="FastAPI route missing await",
+            summary="Learner repeatedly forgets await in FastAPI handlers.",
+            tags=["fastapi", "async", "await"],
+            linked_concepts=["fastapi.async", "missing await"],
+            linked_skillpath_ids=["sp-fastapi-routing"],
+            linked_content_ids=["cp-rerank"],
+            salience_score=0.95,
+        ),
+        db_session,
+    )
+    captured_requests = []
+
+    async def _fake_rerank_memories(request, *, advisor=None):
+        captured_requests.append(request)
+        return MemoryRerankResult(
+            purpose=MemoryRerankPurpose.CODE_CORRECTION,
+            selected_memories=[
+                SelectedMemoryMetadata(
+                    memory_id=seeded_note.memory_id,
+                    memory_type=seeded_note.memory_type,
+                    title=seeded_note.title,
+                    reason="Directly matches the missing-await correction.",
+                )
+            ],
+            teaching_action=TeachingAction.QUICK_RECAP_THEN_HINT,
+            focused_concepts=["fastapi.async", "missing await"],
+            guidance="Focus feedback on awaiting coroutine-producing calls.",
+        )
+
+    monkeypatch.setattr(memory_service, "rerank_memories", _fake_rerank_memories)
+
+    result = await code_correction_service.process_code_correction(
+        CodeCorrectionRequest(
+            user_id=test_user,
+            skillpath_id="sp-fastapi-routing",
+            content_id="cp-rerank",
+            coding_problem_prompt="Fix the FastAPI route so it awaits the DB call.",
+            submitted_code="async def route():\n    return fetch_user()",
+            language="python",
+            runtime_error="RuntimeWarning: coroutine was never awaited",
+            detected_concepts=["fastapi.async"],
+            detected_mistakes=["missing await"],
+        ),
+        db_session,
+    )
+
+    assert captured_requests
+    rerank_request = captured_requests[0]
+    assert rerank_request.purpose == MemoryRerankPurpose.CODE_CORRECTION
+    assert seeded_note.memory_id in [
+        note.memory_id for note in rerank_request.candidate_memories
+    ]
+    assert result.memory_rerank.selected_memory_ids == [seeded_note.memory_id]
+    assert result.memory_rerank.teaching_action == (
+        TeachingAction.QUICK_RECAP_THEN_HINT
+    )
+    assert "awaiting coroutine-producing calls" in result.memory_rerank.guidance
 
 
 @pytest.mark.asyncio
