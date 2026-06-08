@@ -8,9 +8,14 @@ from app.langgraph.content_generation.graphs.generate_learning_content.graph imp
     build_learning_content_graph,
 )
 from app.langgraph.planner.graphs.generate_roadmap.graph import build_planner_graph
+from app.routers.discovery import router as discovery_router
+from app.routers.reviews import router as reviews_router
+from app.routers.signals import router as signals_router
 from app.schema.entities import (
     GoalSpec,
     LearningProfile,
+    MilestoneCustomizationRequest,
+    MilestoneCustomizationResponse,
     MilestoneItem,
     RoadmapFull,
     RoadmapItem,
@@ -19,6 +24,7 @@ from app.schema.entities import (
 from app.services import goal as goal_service
 from app.services import learning_profile as learning_profile_service
 from app.services import roadmap as roadmap_service
+from app.services import roadmap_customization as roadmap_customization_service
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,9 +38,7 @@ _content_generator = build_learning_content_graph()
 
 app = FastAPI(title="AntiCopilot Unified API", version="0.1.0")
 
-from app.routers.reviews import router as reviews_router
-from app.routers.signals import router as signals_router
-
+app.include_router(discovery_router)
 app.include_router(reviews_router)
 app.include_router(signals_router)
 
@@ -238,9 +242,7 @@ async def list_roadmaps(user_id: str = Query(default=DEFAULT_USER_ID)):
 
 
 @app.get("/v1/roadmaps/{roadmap_id}", response_model=RoadmapFull)
-async def get_roadmap(
-    roadmap_id: str, user_id: str = Query(default=DEFAULT_USER_ID)
-):
+async def get_roadmap(roadmap_id: str, user_id: str = Query(default=DEFAULT_USER_ID)):
     """
     Fetch a roadmap and nested milestones, skillpaths, and generated content.
     """
@@ -364,8 +366,32 @@ async def update_skillpath_status(
             await roadmap_service.update_skillpath(
                 user_id, skillpath_id, session, status=request.status
             )
-            return await roadmap_service.get_roadmap_full(
-                user_id, roadmap_id, session
+            return await roadmap_service.get_roadmap_full(user_id, roadmap_id, session)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.post(
+    "/v1/roadmaps/{roadmap_id}/milestones/{milestone_id}/customize",
+    response_model=MilestoneCustomizationResponse,
+)
+async def customize_milestone(
+    roadmap_id: str,
+    milestone_id: str,
+    request: MilestoneCustomizationRequest,
+    user_id: str = Query(default=DEFAULT_USER_ID),
+):
+    """
+    Apply a milestone-scoped roadmap customization from explicit UI context.
+    """
+    async with get_session() as session:
+        try:
+            return await roadmap_customization_service.customize_milestone(
+                user_id=user_id,
+                roadmap_id=roadmap_id,
+                milestone_id=milestone_id,
+                request=request,
+                session=session,
             )
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e

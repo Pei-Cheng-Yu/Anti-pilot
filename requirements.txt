@@ -107,6 +107,7 @@ langchain-openai==1.1.11
 langgraph==1.1.6
 langgraph-api==0.7.71
 langgraph-checkpoint==4.0.1
+langgraph-checkpoint-postgres==3.0.5
 langgraph-cli==0.4.17
 langgraph-prebuilt==1.0.9
 langgraph-runtime-inmem==0.26.0
@@ -160,6 +161,7 @@ pyparsing==3.3.2
 pyperclip==1.11.0
 pytest==9.0.2
 pytest-asyncio==1.3.0
+psycopg[binary,pool]==3.2.13
 python-dateutil==2.9.0.post0
 python-discovery==1.1.3
 python-dotenv==1.2.2
