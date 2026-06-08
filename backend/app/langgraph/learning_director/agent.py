@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from app.db.session import get_session
 from app.langgraph.content_generation.graphs.generate_learning_content.graph import (
@@ -29,6 +29,7 @@ SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
 class LearningDirectorContext(TypedDict):
     user_id: str
+    goal_id: NotRequired[str]
 
 
 def planner_roadmap_id(result: dict) -> str:
@@ -38,11 +39,39 @@ def planner_roadmap_id(result: dict) -> str:
     return roadmap_id
 
 
+def tool_user_id(
+    runtime: ToolRuntime[LearningDirectorContext], user_id: str | None
+) -> str:
+    context = runtime.context or {}
+    resolved_user_id = context.get("user_id") or user_id
+    if not resolved_user_id:
+        raise ValueError(
+            "Learning Director tools require user_id from runtime context or "
+            "explicit tool arguments."
+        )
+    return resolved_user_id
+
+
+def tool_goal_id(
+    runtime: ToolRuntime[LearningDirectorContext], goal_id: str | None
+) -> str:
+    context = runtime.context or {}
+    resolved_goal_id = context.get("goal_id") or goal_id
+    if not resolved_goal_id:
+        raise ValueError(
+            "Learning Director planner requires goal_id from runtime context or "
+            "explicit tool arguments."
+        )
+    return resolved_goal_id
+
+
 @tool(parse_docstring=True)
 async def run_planner(
     goal: GoalSpec,
     profile: LearningProfile,
     runtime: ToolRuntime[LearningDirectorContext],
+    user_id: str | None = None,
+    goal_id: str | None = None,
 ) -> dict:
     """Run the full roadmap planner and persist the result.
 
@@ -51,7 +80,11 @@ async def run_planner(
     Args:
         goal: The user's learning goal.
         profile: The user's learning profile.
+        user_id: The current user ID, only needed when runtime context is unavailable.
+        goal_id: The current goal ID, only needed when runtime context is unavailable.
     """
+    resolved_user_id = tool_user_id(runtime, user_id)
+    resolved_goal_id = tool_goal_id(runtime, goal_id)
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None,
@@ -60,11 +93,11 @@ async def run_planner(
 
     roadmap_id = planner_roadmap_id(result)
     roadmap = result.get("roadmap")
-    user_id = runtime.context["user_id"]
 
     async with get_session() as session:
         await roadmap_service.save_roadmap(
-            user_id=user_id,
+            user_id=resolved_user_id,
+            goal_id=resolved_goal_id,
             roadmap_id=roadmap_id,
             title=roadmap.title if roadmap else goal.title,
             version=roadmap.version if roadmap else 1,
@@ -85,6 +118,7 @@ async def run_content_generator(
     goal: GoalSpec,
     profile: LearningProfile,
     runtime: ToolRuntime[LearningDirectorContext],
+    user_id: str | None = None,
 ) -> dict:
     """Generate and persist learning content for skillpaths in a saved roadmap.
 
@@ -94,11 +128,14 @@ async def run_content_generator(
         roadmap_id: The saved roadmap ID to generate learning content for.
         goal: The user's learning goal.
         profile: The user's learning profile.
+        user_id: The current user ID, only needed when runtime context is unavailable.
     """
-    user_id = runtime.context["user_id"]
+    resolved_user_id = tool_user_id(runtime, user_id)
 
     async with get_session() as session:
-        roadmap = await roadmap_service.get_roadmap_full(user_id, roadmap_id, session)
+        roadmap = await roadmap_service.get_roadmap_full(
+            resolved_user_id, roadmap_id, session
+        )
 
     milestones = [
         MilestoneItem.model_validate(
@@ -129,7 +166,7 @@ async def run_content_generator(
 
     async with get_session() as session:
         await roadmap_service.save_generated_skillpaths(
-            user_id=user_id,
+            user_id=resolved_user_id,
             skillpaths=generated_skillpaths,
             session=session,
         )
@@ -146,7 +183,9 @@ async def inject_user_id(
 ):
     """Inject runtime user_id into MCP tool calls that accept a user_id argument."""
     runtime = request.runtime
-    user_id = runtime.context["user_id"]
+    context = runtime.context or {}
+    args = dict(request.args)
+    user_id = context.get("user_id") or args.get("user_id")
     managed_tool_prefixes = (
         "goal_",
         "learning_profile_",
@@ -156,7 +195,11 @@ async def inject_user_id(
     )
 
     if request.name.startswith(managed_tool_prefixes):
-        args = dict(request.args)
+        if not user_id:
+            raise ValueError(
+                "Learning Director MCP tool calls require user_id from runtime "
+                "context or explicit tool arguments."
+            )
         if "user_id" in args:
             modified_args = {**args, "user_id": user_id}
         else:
@@ -180,6 +223,11 @@ _SYSTEM_PROMPT = """You are a learning director.
 Generate personalized learning roadmaps using the available tools.
 Use MCP tools for saved user data and roadmap updates.
 Any MCP tool that needs user_id receives it automatically from runtime context.
+If the invoking Discovery Agent provides `CURRENT_USER_ID`, pass that value as
+`user_id` to `run_planner`, `run_content_generator`, and any MCP tool call that
+requires user_id when runtime context is unavailable.
+If the invoking Discovery Agent provides `CURRENT_GOAL_ID`, pass that value as
+`goal_id` to `goal_get_goal` and `run_planner` when runtime context is unavailable.
 After roadmap generation, you may mark skillpaths with optional content-planning guidance such as practice mode, example needs, and article depth when the roadmap context makes those decisions clear.
 When the user asks for learning content to be generated, run the content generator after the saved roadmap is ready; it persists generated content to the database.
 """
@@ -204,3 +252,9 @@ async def create_learning_director():
         skills=[SKILLS_DIR],
         tools=[run_planner, run_content_generator, *mcp_tools],
     )
+
+
+if os.getenv("ANTI_PILOT_BUILD_MODULE_GRAPHS") == "1":
+    graph = asyncio.run(create_learning_director())
+else:
+    graph = None

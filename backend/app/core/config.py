@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = os.getenv("POSTGRES_DB", "db")
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
     POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
+    AGENT_SERVER_URL: str = os.getenv("AGENT_SERVER_URL", "http://localhost:2024")
 
     @property
     def database_url(self) -> str:

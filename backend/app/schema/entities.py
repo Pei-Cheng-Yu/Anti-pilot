@@ -394,6 +394,26 @@ class RoadmapFull(BaseModel):
     )
 
 
+class MilestoneCustomizationRequest(BaseModel):
+    instructions: str = Field(
+        default="",
+        description="Learner's requested milestone customization.",
+    )
+    title: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None)
+    objective: Optional[str] = Field(default=None)
+    estimated_hours: Optional[float] = Field(default=None)
+    mark_skillpaths_for_regeneration: bool = Field(default=True)
+
+
+class MilestoneCustomizationResponse(BaseModel):
+    applied: bool
+    message: str
+    milestone: Optional[MilestoneItem] = None
+    affected_skillpath_ids: list[str] = Field(default_factory=list)
+    follow_up_required: bool = False
+
+
 class TestCaseResult(BaseModel):
     name: str = Field(..., description="Short name or identifier for the test case.")
     passed: bool = Field(..., description="Whether the test case passed.")

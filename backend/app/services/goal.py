@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from app.db.model import GoalModel, UserModel
 from app.schema.entities import GoalSpec
 from sqlalchemy import select
@@ -15,15 +17,21 @@ def _to_goal_spec(row: GoalModel) -> GoalSpec:
     )
 
 
-async def save_goal(user_id: str, goal: GoalSpec, session: AsyncSession) -> GoalSpec:
+async def save_goal(
+    user_id: str,
+    goal: GoalSpec,
+    session: AsyncSession,
+    goal_id: str | None = None,
+) -> GoalSpec:
     """Save or replace a user's goal. Creates user row if not exists."""
     user = await session.get(UserModel, user_id)
     if not user:
         session.add(UserModel(user_id=user_id))
 
-    existing = await session.execute(
-        select(GoalModel).where(GoalModel.user_id == user_id)
-    )
+    where_clauses = [GoalModel.user_id == user_id]
+    if goal_id is not None:
+        where_clauses.append(GoalModel.goal_id == goal_id)
+    existing = await session.execute(select(GoalModel).where(*where_clauses))
     row = existing.scalar_one_or_none()
 
     if row:
@@ -35,6 +43,7 @@ async def save_goal(user_id: str, goal: GoalSpec, session: AsyncSession) -> Goal
         row.constraints = goal.constraints
     else:
         row = GoalModel(
+            goal_id=goal_id or str(uuid4()),
             user_id=user_id,
             title=goal.title,
             description=goal.description,
@@ -49,11 +58,17 @@ async def save_goal(user_id: str, goal: GoalSpec, session: AsyncSession) -> Goal
     return _to_goal_spec(row)
 
 
-async def get_goal(user_id: str, session: AsyncSession) -> GoalSpec:
+async def get_goal(
+    user_id: str, session: AsyncSession, goal_id: str | None = None
+) -> GoalSpec:
     """Fetch a user's goal."""
-    result = await session.execute(
-        select(GoalModel).where(GoalModel.user_id == user_id)
-    )
+    where_clauses = [GoalModel.user_id == user_id]
+    if goal_id is not None:
+        where_clauses.append(GoalModel.goal_id == goal_id)
+    statement = select(GoalModel).where(*where_clauses)
+    if goal_id is None:
+        statement = statement.order_by(GoalModel.id.desc()).limit(1)
+    result = await session.execute(statement)
     row = result.scalar_one_or_none()
     if not row:
         raise ValueError(f"No goal found for user {user_id}")

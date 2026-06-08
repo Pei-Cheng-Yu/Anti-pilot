@@ -5,6 +5,7 @@ import pytest
 from app.core.config import settings
 from app.db.model import (
     Base,
+    DiscoveryConversationModel,
     GoalModel,
     LearningContentModel,
     LearningProfileModel,
@@ -18,14 +19,17 @@ from app.schema.entities import (
     ArticleLearningContent,
     GoalSpec,
     LearningProfile,
+    MilestoneCustomizationRequest,
     MilestoneItem,
     SkillPathItem,
     SourceLink,
 )
 from app.schema.enums import LearningContentType, PracticeMode
+from app.services import discovery as discovery_service
 from app.services import goal as goal_service
 from app.services import learning_profile as learning_profile_service
 from app.services import roadmap as roadmap_service
+from app.services import roadmap_customization as roadmap_customization_service
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -201,6 +205,11 @@ async def test_user():
                 )
             )
             await cleanup_session.execute(
+                delete(DiscoveryConversationModel).where(
+                    DiscoveryConversationModel.user_id == user_id
+                )
+            )
+            await cleanup_session.execute(
                 delete(GoalModel).where(GoalModel.user_id == user_id)
             )
             await cleanup_session.execute(
@@ -219,6 +228,96 @@ async def test_goal_service_roundtrip(db_session, test_user: str):
 
     assert saved == goal
     assert loaded == goal
+
+
+@pytest.mark.asyncio
+async def test_goal_service_supports_multiple_goals_for_one_user(
+    db_session, test_user: str
+):
+    first_goal_id = f"goal-fastapi-{uuid4()}"
+    second_goal_id = f"goal-sqlalchemy-{uuid4()}"
+    first_goal = make_goal()
+    second_goal = make_goal().model_copy(
+        update={
+            "title": "Learn SQLAlchemy",
+            "description": "Build reliable async persistence with SQLAlchemy.",
+            "target_outcome": "Ship async database-backed API routes.",
+        }
+    )
+
+    saved_first = await goal_service.save_goal(
+        test_user, first_goal, db_session, goal_id=first_goal_id
+    )
+    saved_second = await goal_service.save_goal(
+        test_user, second_goal, db_session, goal_id=second_goal_id
+    )
+    loaded_first = await goal_service.get_goal(
+        test_user, db_session, goal_id=first_goal_id
+    )
+    loaded_second = await goal_service.get_goal(
+        test_user, db_session, goal_id=second_goal_id
+    )
+    rows = list(
+        (
+            await db_session.execute(
+                select(GoalModel).where(GoalModel.user_id == test_user)
+            )
+        ).scalars()
+    )
+
+    assert saved_first == first_goal
+    assert saved_second == second_goal
+    assert loaded_first == first_goal
+    assert loaded_second == second_goal
+    assert {row.goal_id for row in rows} == {first_goal_id, second_goal_id}
+
+
+@pytest.mark.asyncio
+async def test_goal_service_rejects_cross_user_goal_access(db_session, test_user: str):
+    goal = make_goal()
+    goal_id = f"goal-private-{uuid4()}"
+
+    await goal_service.save_goal(test_user, goal, db_session, goal_id=goal_id)
+
+    with pytest.raises(ValueError, match="No goal found"):
+        await goal_service.get_goal(
+            "other-user",
+            db_session,
+            goal_id=goal_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_discovery_conversation_can_bind_goal_after_creation(
+    db_session, test_user: str
+):
+    goal_id = f"goal-fastapi-{uuid4()}"
+    conversation_id = f"convo-{uuid4()}"
+    await goal_service.save_goal(test_user, make_goal(), db_session, goal_id=goal_id)
+    await discovery_service.save_discovery_conversation(
+        test_user, conversation_id, db_session
+    )
+
+    before_user_id, before_goal_id = (
+        await discovery_service.get_discovery_conversation_context(
+            conversation_id, db_session
+        )
+    )
+    await discovery_service.bind_discovery_conversation_goal(
+        conversation_id, test_user, goal_id, db_session
+    )
+    after_user_id, after_goal_id = (
+        await discovery_service.get_discovery_conversation_context(
+            conversation_id, db_session
+        )
+    )
+    row = await db_session.get(DiscoveryConversationModel, conversation_id)
+
+    assert before_user_id == test_user
+    assert before_goal_id is None
+    assert after_user_id == test_user
+    assert after_goal_id == goal_id
+    assert row.goal_id == goal_id
 
 
 @pytest.mark.asyncio
@@ -293,6 +392,78 @@ async def test_roadmap_service_roundtrip_and_scoping(db_session, test_user: str)
 
 
 @pytest.mark.asyncio
+async def test_roadmap_service_links_one_primary_roadmap_per_goal(
+    db_session, test_user: str
+):
+    first_goal_id = f"goal-fastapi-{uuid4()}"
+    second_goal_id = f"goal-sqlalchemy-{uuid4()}"
+    first_goal = make_goal()
+    second_goal = make_goal().model_copy(update={"title": "Learn SQLAlchemy"})
+    await goal_service.save_goal(
+        test_user, first_goal, db_session, goal_id=first_goal_id
+    )
+    await goal_service.save_goal(
+        test_user, second_goal, db_session, goal_id=second_goal_id
+    )
+
+    first_roadmap_id = f"roadmap-{uuid4()}"
+    first_milestone = make_milestone(first_roadmap_id)
+    await roadmap_service.save_roadmap(
+        user_id=test_user,
+        goal_id=first_goal_id,
+        roadmap_id=first_roadmap_id,
+        version=1,
+        summary="FastAPI roadmap",
+        target_outcome=first_goal.target_outcome,
+        assumptions=[],
+        milestones=[first_milestone],
+        skillpaths=[make_skillpath(first_milestone.milestone_id)],
+        session=db_session,
+    )
+
+    second_roadmap_id = f"roadmap-{uuid4()}"
+    second_milestone = make_milestone(second_roadmap_id)
+    await roadmap_service.save_roadmap(
+        user_id=test_user,
+        goal_id=second_goal_id,
+        roadmap_id=second_roadmap_id,
+        version=1,
+        summary="SQLAlchemy roadmap",
+        target_outcome=second_goal.target_outcome,
+        assumptions=[],
+        milestones=[second_milestone],
+        skillpaths=[make_skillpath(second_milestone.milestone_id)],
+        session=db_session,
+    )
+
+    loaded_first = await roadmap_service.get_roadmap_full(
+        test_user, first_roadmap_id, db_session
+    )
+    loaded_second = await roadmap_service.get_roadmap_full(
+        test_user, second_roadmap_id, db_session
+    )
+
+    assert loaded_first.summary == "FastAPI roadmap"
+    assert loaded_second.summary == "SQLAlchemy roadmap"
+
+    duplicate_roadmap_id = f"roadmap-{uuid4()}"
+    duplicate_milestone = make_milestone(duplicate_roadmap_id)
+    with pytest.raises(ValueError, match="already exists for goal"):
+        await roadmap_service.save_roadmap(
+            user_id=test_user,
+            goal_id=first_goal_id,
+            roadmap_id=duplicate_roadmap_id,
+            version=1,
+            summary="Duplicate FastAPI roadmap",
+            target_outcome=first_goal.target_outcome,
+            assumptions=[],
+            milestones=[duplicate_milestone],
+            skillpaths=[make_skillpath(duplicate_milestone.milestone_id)],
+            session=db_session,
+        )
+
+
+@pytest.mark.asyncio
 async def test_roadmap_service_persists_generated_learning_contents(
     db_session, test_user: str
 ):
@@ -337,7 +508,10 @@ async def test_roadmap_service_persists_generated_learning_contents(
     )
     assert loaded_skillpath.learning_contents[0].title == "HTTP request basics"
     first_content_id = loaded_skillpath.learning_contents[0].content_id
-    assert generated_skillpath.learning_contents[0].content_id == original_generated_content_id
+    assert (
+        generated_skillpath.learning_contents[0].content_id
+        == original_generated_content_id
+    )
     assert first_content_id != original_generated_content_id
 
     review_result = await db_session.execute(
@@ -362,9 +536,9 @@ async def test_roadmap_service_persists_generated_learning_contents(
         test_user, [generated_skillpath], db_session
     )
     reloaded = await roadmap_service.get_roadmap_full(test_user, roadmap_id, db_session)
-    reloaded_content_id = reloaded.milestones[0].skillpaths[0].learning_contents[
-        0
-    ].content_id
+    reloaded_content_id = (
+        reloaded.milestones[0].skillpaths[0].learning_contents[0].content_id
+    )
     assert reloaded_content_id == first_content_id
     preserved_review_result = await db_session.execute(
         select(ReviewConceptModel).where(
@@ -378,7 +552,9 @@ async def test_roadmap_service_persists_generated_learning_contents(
     assert preserved_review_card.lapses == 1
 
     review_count_result = await db_session.execute(
-        select(func.count()).select_from(ReviewConceptModel).where(
+        select(func.count())
+        .select_from(ReviewConceptModel)
+        .where(
             ReviewConceptModel.user_id == test_user,
             ReviewConceptModel.source_type == "skill_path",
             ReviewConceptModel.source_ref_id == first_content_id,
@@ -409,3 +585,112 @@ async def test_roadmap_service_persists_generated_learning_contents(
     reset_review_card = reset_review_result.scalar_one()
     assert reset_review_card.reps == 0
     assert reset_review_card.lapses == 0
+
+
+@pytest.mark.asyncio
+async def test_customize_milestone_updates_fields_and_marks_skillpaths(
+    db_session, test_user: str
+):
+    goal_id = f"goal-fastapi-{uuid4()}"
+    await goal_service.save_goal(test_user, make_goal(), db_session, goal_id=goal_id)
+    roadmap_id = f"roadmap-{uuid4()}"
+    milestone = make_milestone(roadmap_id)
+    skillpath = make_skillpath(milestone.milestone_id)
+    await roadmap_service.save_roadmap(
+        user_id=test_user,
+        goal_id=goal_id,
+        roadmap_id=roadmap_id,
+        version=1,
+        summary="FastAPI roadmap",
+        target_outcome="Build FastAPI APIs",
+        assumptions=[],
+        milestones=[milestone],
+        skillpaths=[skillpath],
+        session=db_session,
+    )
+
+    result = await roadmap_customization_service.customize_milestone(
+        user_id=test_user,
+        roadmap_id=roadmap_id,
+        milestone_id=milestone.milestone_id,
+        request=MilestoneCustomizationRequest(
+            instructions="Slow this milestone down and add async dependency injection emphasis.",
+            objective="Understand async routing and dependency injection.",
+            estimated_hours=12.0,
+        ),
+        session=db_session,
+    )
+    reloaded = await roadmap_service.get_roadmap_full(test_user, roadmap_id, db_session)
+
+    assert result.applied is True
+    assert result.follow_up_required is False
+    assert result.milestone is not None
+    assert "dependency injection" in result.milestone.objective
+    assert result.affected_skillpath_ids == [skillpath.skillpath_id]
+    assert reloaded.milestones[0].skillpaths[0].need_modification is True
+    assert reloaded.milestones[0].skillpaths[0].need_generation is True
+
+
+@pytest.mark.asyncio
+async def test_customize_milestone_returns_followup_for_ambiguous_request(
+    db_session, test_user: str
+):
+    goal_id = f"goal-fastapi-{uuid4()}"
+    await goal_service.save_goal(test_user, make_goal(), db_session, goal_id=goal_id)
+    roadmap_id = f"roadmap-{uuid4()}"
+    milestone = make_milestone(roadmap_id)
+    await roadmap_service.save_roadmap(
+        user_id=test_user,
+        goal_id=goal_id,
+        roadmap_id=roadmap_id,
+        version=1,
+        summary="FastAPI roadmap",
+        target_outcome="Build FastAPI APIs",
+        assumptions=[],
+        milestones=[milestone],
+        skillpaths=[],
+        session=db_session,
+    )
+
+    result = await roadmap_customization_service.customize_milestone(
+        user_id=test_user,
+        roadmap_id=roadmap_id,
+        milestone_id=milestone.milestone_id,
+        request=MilestoneCustomizationRequest(instructions="Please improve it."),
+        session=db_session,
+    )
+
+    assert result.applied is False
+    assert result.follow_up_required is True
+    assert result.message
+
+
+@pytest.mark.asyncio
+async def test_customize_milestone_rejects_cross_user_access(
+    db_session, test_user: str
+):
+    goal_id = f"goal-fastapi-{uuid4()}"
+    await goal_service.save_goal(test_user, make_goal(), db_session, goal_id=goal_id)
+    roadmap_id = f"roadmap-{uuid4()}"
+    milestone = make_milestone(roadmap_id)
+    await roadmap_service.save_roadmap(
+        user_id=test_user,
+        goal_id=goal_id,
+        roadmap_id=roadmap_id,
+        version=1,
+        summary="FastAPI roadmap",
+        target_outcome="Build FastAPI APIs",
+        assumptions=[],
+        milestones=[milestone],
+        skillpaths=[],
+        session=db_session,
+    )
+
+    with pytest.raises(ValueError, match="not found for user"):
+        await roadmap_customization_service.customize_milestone(
+            user_id="other-user",
+            roadmap_id=roadmap_id,
+            milestone_id=milestone.milestone_id,
+            request=MilestoneCustomizationRequest(objective="Change it"),
+            session=db_session,
+        )

@@ -3,8 +3,9 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.main import app
 from app.db.model import ReviewConceptModel
+from app.langgraph.learning_director import agent as learning_director_agent
+from app.main import app
 from app.routers.reviews import (
     ReviewGradeRequest,
     generate_task_for_concept,
@@ -12,10 +13,10 @@ from app.routers.reviews import (
     get_due_reviews,
     grade_review,
 )
-from app.langgraph.learning_director import agent as learning_director_agent
 from app.schema.entities import (
     GoalSpec,
     LearningProfile,
+    MilestoneCustomizationResponse,
     MilestoneItem,
     MilestoneWithSkillPaths,
     RoadmapFull,
@@ -420,7 +421,9 @@ def test_generate_roadmap_content(monkeypatch):
     save_generated_skillpaths = AsyncMock()
 
     monkeypatch.setattr("app.main.get_session", fake_session)
-    monkeypatch.setattr("app.main.goal_service.get_goal", AsyncMock(return_value=make_goal()))
+    monkeypatch.setattr(
+        "app.main.goal_service.get_goal", AsyncMock(return_value=make_goal())
+    )
     monkeypatch.setattr(
         "app.main.learning_profile_service.get_learning_profile",
         AsyncMock(return_value=make_profile()),
@@ -478,7 +481,9 @@ def test_generate_roadmap_content_rejects_multi_skillpath_batch(monkeypatch):
     )
 
     monkeypatch.setattr("app.main.get_session", fake_session)
-    monkeypatch.setattr("app.main.goal_service.get_goal", AsyncMock(return_value=make_goal()))
+    monkeypatch.setattr(
+        "app.main.goal_service.get_goal", AsyncMock(return_value=make_goal())
+    )
     monkeypatch.setattr(
         "app.main.learning_profile_service.get_learning_profile",
         AsyncMock(return_value=make_profile()),
@@ -543,7 +548,9 @@ def test_generate_skillpath_content(monkeypatch):
             return {"generated_skillpaths": [generated_skillpath]}
 
     monkeypatch.setattr("app.main.get_session", fake_session)
-    monkeypatch.setattr("app.main.goal_service.get_goal", AsyncMock(return_value=make_goal()))
+    monkeypatch.setattr(
+        "app.main.goal_service.get_goal", AsyncMock(return_value=make_goal())
+    )
     monkeypatch.setattr(
         "app.main.learning_profile_service.get_learning_profile",
         AsyncMock(return_value=make_profile()),
@@ -557,9 +564,7 @@ def test_generate_skillpath_content(monkeypatch):
     )
     monkeypatch.setattr("app.main._content_generator", FakeContentGraph())
 
-    response = client.post(
-        f"/v1/roadmaps/{roadmap_id}/skillpaths/s1/generate-content"
-    )
+    response = client.post(f"/v1/roadmaps/{roadmap_id}/skillpaths/s1/generate-content")
     assert response.status_code == 200
     assert response.json()["generated_skillpath_count"] == 1
 
@@ -721,12 +726,78 @@ def test_update_skillpath_status_returns_404_when_skillpath_missing(monkeypatch)
     monkeypatch.setattr("app.main.get_session", fake_session)
     monkeypatch.setattr(
         "app.main.roadmap_service.update_skillpath",
-        AsyncMock(side_effect=ValueError("SkillPath sp-1 not found for user default-user")),
+        AsyncMock(
+            side_effect=ValueError("SkillPath sp-1 not found for user default-user")
+        ),
     )
 
     response = client.post(
         "/v1/roadmaps/roadmap-1/skillpaths/sp-1/status",
         json={"status": "completed"},
     )
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"]
+
+
+def test_customize_milestone_endpoint(monkeypatch):
+    milestone = MilestoneItem(
+        roadmap_id="roadmap-1",
+        milestone_id="m-1",
+        title="Foundations",
+        description="Desc",
+        objective="Build a practical route.",
+        estimated_hours=2,
+        order_index=1,
+    )
+    customize = AsyncMock(
+        return_value=MilestoneCustomizationResponse(
+            applied=True,
+            message="Milestone updated.",
+            milestone=milestone,
+            affected_skillpath_ids=["sp-1"],
+            follow_up_required=False,
+        )
+    )
+
+    monkeypatch.setattr("app.main.get_session", fake_session)
+    monkeypatch.setattr(
+        "app.main.roadmap_customization_service.customize_milestone",
+        customize,
+    )
+
+    response = client.post(
+        "/v1/roadmaps/roadmap-1/milestones/m-1/customize?user_id=user-123",
+        json={
+            "instructions": "Make this milestone more practical.",
+            "objective": "Build a practical route.",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["applied"] is True
+    assert data["affected_skillpath_ids"] == ["sp-1"]
+    customize.assert_awaited_once()
+    assert customize.await_args.kwargs["user_id"] == "user-123"
+    assert customize.await_args.kwargs["roadmap_id"] == "roadmap-1"
+    assert customize.await_args.kwargs["milestone_id"] == "m-1"
+
+
+def test_customize_milestone_endpoint_returns_404_for_cross_user(monkeypatch):
+    customize = AsyncMock(
+        side_effect=ValueError("Milestone m-1 not found for user user-123")
+    )
+
+    monkeypatch.setattr("app.main.get_session", fake_session)
+    monkeypatch.setattr(
+        "app.main.roadmap_customization_service.customize_milestone",
+        customize,
+    )
+
+    response = client.post(
+        "/v1/roadmaps/roadmap-1/milestones/m-1/customize?user_id=user-123",
+        json={"objective": "Change it."},
+    )
+
     assert response.status_code == 404
     assert "not found" in response.json()["detail"]
