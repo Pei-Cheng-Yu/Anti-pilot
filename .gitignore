@@ -81,6 +81,9 @@ graphify-out/cost.json
 # Optional: skip cache to keep the repo small.
 graphify-out/cache/
 
+# Local isolated implementation worktrees.
+.worktrees/
+
 # Ignore accidental nested Graphify outputs; the shared team map lives at repo root.
 backend/graphify-out/
 .codex/
