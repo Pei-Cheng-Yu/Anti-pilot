@@ -21,6 +21,7 @@ from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 load_dotenv()
 
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp")
+DISCOVERY_AGENT_MODEL = "google_genai:gemini-3.1-flash-lite-preview"
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 DISCOVERY_MCP_TOOL_ALLOWLIST = {
     "learning_profile_save_learning_profile",
@@ -28,6 +29,10 @@ DISCOVERY_MCP_TOOL_ALLOWLIST = {
     "learning_memory_get_skill_mastery_state",
     "learning_memory_add_memory_note",
 }
+
+
+def discovery_agent_model() -> str:
+    return os.getenv("DISCOVERY_AGENT_MODEL", DISCOVERY_AGENT_MODEL)
 
 
 def filter_discovery_tools(tools: Iterable[Any]) -> list[Any]:
@@ -196,7 +201,7 @@ async def create_discovery_agent(
     }
 
     return create_deep_agent(
-        model="google_genai:gemini-3.1-pro-preview",
+        model=discovery_agent_model(),
         tools=[
             discovery_get_goal_status,
             discovery_save_goal,

@@ -93,12 +93,12 @@ async def _cleanup_user(user_id: str) -> None:
         await session.execute(
             delete(LearningProfileModel).where(LearningProfileModel.user_id == user_id)
         )
-        await session.execute(delete(GoalModel).where(GoalModel.user_id == user_id))
         await session.execute(
             delete(DiscoveryConversationModel).where(
                 DiscoveryConversationModel.user_id == user_id
             )
         )
+        await session.execute(delete(GoalModel).where(GoalModel.user_id == user_id))
         await session.execute(delete(UserModel).where(UserModel.user_id == user_id))
         await session.commit()
 

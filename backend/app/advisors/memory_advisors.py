@@ -22,7 +22,7 @@ from deepagents import create_deep_agent
 from pydantic import BaseModel, TypeAdapter
 
 MEMORY_ADVISOR_MODEL = os.getenv(
-    "MEMORY_ADVISOR_MODEL", "google_genai:gemini-3.1-pro-preview"
+    "MEMORY_ADVISOR_MODEL", "google_genai:gemini-3.1-flash-lite-preview"
 )
 
 _MEMORY_ADVISOR_SYSTEM_PROMPT = """You are a memory advisor for an agentic learning backend.
