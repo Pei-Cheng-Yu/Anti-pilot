@@ -24,12 +24,17 @@ _content_generator = build_learning_content_graph()
 
 # MCP server URL where app/mcp/server.py is running.
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp")
+LEARNING_DIRECTOR_MODEL = "google_genai:gemini-3.1-flash-lite-preview"
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
 
 class LearningDirectorContext(TypedDict):
     user_id: str
     goal_id: NotRequired[str]
+
+
+def learning_director_model() -> str:
+    return os.getenv("LEARNING_DIRECTOR_MODEL", LEARNING_DIRECTOR_MODEL)
 
 
 def planner_roadmap_id(result: dict) -> str:
@@ -246,7 +251,7 @@ async def create_learning_director():
     )
     mcp_tools = await client.get_tools()
     return create_deep_agent(
-        model="google_genai:gemini-3.1-pro-preview",
+        model=learning_director_model(),
         system_prompt=_SYSTEM_PROMPT,
         context_schema=LearningDirectorContext,
         skills=[SKILLS_DIR],

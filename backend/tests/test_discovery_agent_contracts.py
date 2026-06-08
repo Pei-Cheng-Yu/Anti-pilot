@@ -434,6 +434,35 @@ async def test_create_discovery_agent_includes_skill_directory(monkeypatch):
     assert captured_kwargs["skills"] == [discovery_agent.SKILLS_DIR]
 
 
+@pytest.mark.asyncio
+async def test_create_discovery_agent_uses_configured_model(monkeypatch):
+    captured_kwargs = {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def get_tools(self):
+            return []
+
+    def fake_create_deep_agent(**kwargs):
+        captured_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setenv(
+        "DISCOVERY_AGENT_MODEL", "google_genai:gemini-3.1-flash-lite-preview"
+    )
+    monkeypatch.setattr(discovery_agent, "MultiServerMCPClient", FakeClient)
+    monkeypatch.setattr(discovery_agent, "create_deep_agent", fake_create_deep_agent)
+
+    await discovery_agent.create_discovery_agent(
+        checkpointer=None,
+        use_custom_checkpointer=False,
+    )
+
+    assert captured_kwargs["model"] == "google_genai:gemini-3.1-flash-lite-preview"
+
+
 def test_checkpoint_database_url_uses_psycopg_scheme(monkeypatch):
     monkeypatch.setattr(checkpointing.settings, "POSTGRES_USER", "user")
     monkeypatch.setattr(checkpointing.settings, "POSTGRES_PASSWORD", "pass")

@@ -66,7 +66,7 @@ and timestamps remain service-owned and are ignored if an advisor suggests them.
 Advisor execution is controlled by environment flags:
 
 - `ENABLE_MEMORY_INTEGRITY_ADVISOR=1` enables the integrity advisor.
-- `MEMORY_ADVISOR_MODEL` defaults to `google_genai:gemini-3.1-pro-preview`.
+- `MEMORY_ADVISOR_MODEL` defaults to `google_genai:gemini-3.1-flash-lite-preview`.
 
 The service still requires at least one model credential environment variable:
 `GOOGLE_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_GENAI_API_KEY`. Without this flag

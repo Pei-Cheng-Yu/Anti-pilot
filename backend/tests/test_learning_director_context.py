@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 from app.langgraph.learning_director import agent as learning_director_agent
-from app.langgraph.learning_director.agent import inject_user_id, run_planner
+from app.langgraph.learning_director.agent import (
+    create_learning_director,
+    inject_user_id,
+    run_planner,
+)
 from app.schema.entities import GoalSpec, LearningProfile
 from langchain.tools import ToolRuntime
 
@@ -212,3 +216,31 @@ async def test_run_planner_requires_user_id_when_runtime_context_missing():
                 "runtime": runtime,
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_create_learning_director_uses_configured_model(monkeypatch):
+    captured_kwargs = {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def get_tools(self):
+            return []
+
+    def fake_create_deep_agent(**kwargs):
+        captured_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setenv(
+        "LEARNING_DIRECTOR_MODEL", "google_genai:gemini-3.1-flash-lite-preview"
+    )
+    monkeypatch.setattr(learning_director_agent, "MultiServerMCPClient", FakeClient)
+    monkeypatch.setattr(
+        learning_director_agent, "create_deep_agent", fake_create_deep_agent
+    )
+
+    await create_learning_director()
+
+    assert captured_kwargs["model"] == "google_genai:gemini-3.1-flash-lite-preview"

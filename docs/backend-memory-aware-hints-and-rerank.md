@@ -81,7 +81,7 @@ Advisor execution is controlled by environment flags:
 
 - `ENABLE_MEMORY_HINT_ADVISOR=1` enables the hint advisor.
 - `ENABLE_MEMORY_RERANK_ADVISOR=1` enables the rerank advisor.
-- `MEMORY_ADVISOR_MODEL` defaults to `google_genai:gemini-3.1-pro-preview`.
+- `MEMORY_ADVISOR_MODEL` defaults to `google_genai:gemini-3.1-flash-lite-preview`.
 
 The services still require at least one model credential environment variable:
 `GOOGLE_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_GENAI_API_KEY`. Without these

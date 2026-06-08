@@ -10,7 +10,7 @@ from deepagents import create_deep_agent
 from pydantic import TypeAdapter
 
 CODE_VALIDATOR_MODEL = os.getenv(
-    "CODE_VALIDATOR_MODEL", "google_genai:gemini-3.1-pro-preview"
+    "CODE_VALIDATOR_MODEL", "google_genai:gemini-3.1-flash-lite-preview"
 )
 
 _VALIDATOR_SYSTEM_PROMPT = """You are a code validation agent.
