@@ -52,3 +52,32 @@ class MasteryStatus(str, Enum):
     PRACTICING = "practicing"
     MASTERED = "mastered"
     REGRESSED = "regressed"
+
+
+class MemoryIntegrityAction(str, Enum):
+    CREATE_NEW = "create_new"
+    UPDATE_EXISTING = "update_existing"
+    MERGE = "merge"
+    SKIP_DUPLICATE = "skip_duplicate"
+    KEEP_BOTH_SCOPED = "keep_both_scoped"
+    FLAG_CONFLICT = "flag_conflict"
+
+
+class HintLevel(str, Enum):
+    NUDGE = "nudge"
+    CONCEPTUAL = "conceptual"
+    SPECIFIC = "specific"
+    NEAR_SOLUTION = "near_solution"
+
+
+class TeachingAction(str, Enum):
+    NORMAL_HINT = "normal_hint"
+    QUICK_RECAP = "quick_recap"
+    CONTRAST_EXAMPLE = "contrast_example"
+    QUICK_RECAP_THEN_HINT = "quick_recap_then_hint"
+
+
+class MemoryRerankPurpose(str, Enum):
+    HINT_GENERATION = "hint_generation"
+    CODE_CORRECTION = "code_correction"
+    CONTENT_GENERATION = "content_generation"

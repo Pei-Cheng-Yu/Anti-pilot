@@ -5,11 +5,15 @@ from app.schema.enums import (
     ArticleDepth,
     AttemptCorrectness,
     ExampleStyle,
+    HintLevel,
     LearningContentType,
     MasteryStatus,
+    MemoryIntegrityAction,
+    MemoryRerankPurpose,
     MemoryStatus,
     MemoryType,
     PracticeMode,
+    TeachingAction,
 )
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -572,6 +576,116 @@ class MemorySalienceAdjustment(BaseModel):
     reason: str = Field(..., description="Short rationale for the adjustment.")
 
 
+class MemoryIntegrityEvidence(BaseModel):
+    candidate_memory_id: str
+    candidate_memory_type: MemoryType
+    type_compatible: bool = False
+    concept_overlap: int = 0
+    tag_overlap: int = 0
+    scope_overlap: int = 0
+    semantic_similarity: float = 0.0
+    salience_score: float = 0.0
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    reasons: list[str] = Field(default_factory=list)
+
+
+class MemoryIntegrityAdvisorRecommendation(BaseModel):
+    action: MemoryIntegrityAction
+    target_memory_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str = ""
+    field_updates: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryIntegrityDecision(BaseModel):
+    action: MemoryIntegrityAction
+    target_memory_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str = ""
+    advisor_used: bool = False
+    evidence: list[MemoryIntegrityEvidence] = Field(default_factory=list)
+    field_updates: dict[str, Any] = Field(default_factory=dict)
+
+
+class MergeMemoryNotesInput(BaseModel):
+    user_id: str
+    primary_memory_id: str
+    duplicate_memory_ids: list[str]
+    rationale: str = ""
+
+
+class MergeMemoryNotesResult(BaseModel):
+    primary_note: LearnerMemoryNote
+    merged_memory_ids: list[str] = Field(default_factory=list)
+    resolved_memory_ids: list[str] = Field(default_factory=list)
+
+
+class ResolveMemoryConflictInput(BaseModel):
+    user_id: str
+    primary_memory_id: str
+    conflicting_memory_id: str
+    rationale: str = ""
+
+
+class ResolveMemoryConflictResult(BaseModel):
+    primary_note: LearnerMemoryNote
+    conflicting_note: LearnerMemoryNote
+    action: MemoryIntegrityAction
+    rationale: str = ""
+
+
+class SelectedMemoryMetadata(BaseModel):
+    memory_id: str
+    memory_type: MemoryType
+    title: str
+    reason: str = ""
+
+
+class MemoryRerankRequest(BaseModel):
+    purpose: MemoryRerankPurpose
+    task_context: str = ""
+    learner_context: str = ""
+    recent_attempts: list[CodingProblemAttempt] = Field(default_factory=list)
+    candidate_memories: list[LearnerMemoryNote] = Field(default_factory=list)
+    max_selected: int = Field(default=3, ge=0, le=10)
+
+
+class MemoryRerankResult(BaseModel):
+    purpose: MemoryRerankPurpose
+    selected_memories: list[SelectedMemoryMetadata] = Field(default_factory=list)
+    teaching_action: TeachingAction = TeachingAction.NORMAL_HINT
+    focused_concepts: list[str] = Field(default_factory=list)
+    guidance: str = ""
+
+    @property
+    def selected_memory_ids(self) -> list[str]:
+        return [memory.memory_id for memory in self.selected_memories]
+
+
+class HintRequest(BaseModel):
+    user_id: str
+    skillpath_id: str | None = None
+    content_id: str | None = None
+    task_prompt: str
+    submitted_code: str = ""
+    language: str = "python"
+    concept_keys: list[str] = Field(default_factory=list)
+    validation_feedback: str | None = None
+    hint_level: HintLevel = HintLevel.NUDGE
+
+
+class HintResponse(BaseModel):
+    hint: str
+    hint_level: HintLevel
+    teaching_action: TeachingAction = TeachingAction.NORMAL_HINT
+    selected_memory_ids: list[str] = Field(default_factory=list)
+    selected_memories: list[SelectedMemoryMetadata] = Field(default_factory=list)
+    focused_concepts: list[str] = Field(default_factory=list)
+    quick_recap: str | None = None
+    contrast_example: str | None = None
+    used_memory: bool = False
+
+
 class MemoryConsolidationJudgment(BaseModel):
     attempt_importance: Literal["low", "medium", "high"] = "medium"
     success_quality: Literal["none", "shallow", "normal", "strong"] = "none"
@@ -663,6 +777,15 @@ class CodeCorrectionResult(BaseModel):
     suggested_focus: list[str] = Field(
         default_factory=list,
         description="Concepts or mistakes the correction agent should emphasize next.",
+    )
+    memory_rerank: MemoryRerankResult = Field(
+        default_factory=lambda: MemoryRerankResult(
+            purpose=MemoryRerankPurpose.CODE_CORRECTION
+        ),
+        description=(
+            "Advisory selected memories and teaching guidance used for the "
+            "code-correction response."
+        ),
     )
 
 

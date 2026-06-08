@@ -11,17 +11,21 @@ from app.langgraph.content_generation.graphs.generate_learning_content.utils imp
 )
 from app.langgraph.content_generation.schema.state import (
     ContentGenerationState,
+    LearningMemoryRerankDiagnostic,
     LearningMemoryRetrievalDiagnostic,
 )
 from app.schema.entities import (
     ContentGenerationPlan,
+    LearnerMemoryNote,
     LearningMemoryContext,
+    MemoryRerankRequest,
+    MemoryRerankResult,
     MilestoneItem,
     RetrieveLearningMemoryInput,
     SkillPathItem,
 )
-from app.schema.enums import ExampleStyle, PracticeMode
-from app.services import learning_memory
+from app.schema.enums import ExampleStyle, MemoryRerankPurpose, PracticeMode
+from app.services import memory_service
 from langgraph.graph import END
 from langgraph.types import Send
 
@@ -117,7 +121,7 @@ def _retrieve_learning_memory_context(
 
     async def _retrieve() -> LearningMemoryContext:
         async with get_session() as session:
-            return await learning_memory.retrieve_learning_memory(
+            return await memory_service.retrieve_learning_memory(
                 RetrieveLearningMemoryInput(
                     user_id=user_id,
                     query_text="\n".join(
@@ -134,6 +138,84 @@ def _retrieve_learning_memory_context(
             )
 
     return asyncio.run(_retrieve())
+
+
+def _candidate_memories_from_context(
+    context: LearningMemoryContext | None,
+) -> list[LearnerMemoryNote]:
+    if context is None:
+        return []
+
+    candidates: list[LearnerMemoryNote] = []
+    seen: set[str] = set()
+    for group in (
+        context.relevant_notes,
+        context.active_error_patterns,
+        context.teaching_heuristics,
+        context.mastery_signals,
+        context.background_notes,
+    ):
+        for note in group:
+            if note.memory_id in seen:
+                continue
+            seen.add(note.memory_id)
+            candidates.append(note)
+    return candidates
+
+
+def _rerank_learning_memory_for_content(
+    *,
+    skillpath: SkillPathItem,
+    context: LearningMemoryContext | None,
+) -> tuple[MemoryRerankResult | None, LearningMemoryRerankDiagnostic]:
+    candidates = _candidate_memories_from_context(context)
+    if not candidates:
+        return None, LearningMemoryRerankDiagnostic(
+            skillpath_id=skillpath.skillpath_id,
+            status="skipped_no_memory",
+            candidate_memory_count=0,
+        )
+
+    try:
+        rerank_result = asyncio.run(
+            memory_service.rerank_memories(
+                MemoryRerankRequest(
+                    purpose=MemoryRerankPurpose.CONTENT_GENERATION,
+                    task_context="\n".join(
+                        [
+                            skillpath.title,
+                            skillpath.description,
+                            " ".join(skillpath.learning_objectives),
+                        ]
+                    ),
+                    learner_context=(
+                        context.mastery_state.model_dump_json()
+                        if context and context.mastery_state
+                        else ""
+                    ),
+                    recent_attempts=context.recent_attempts if context else [],
+                    candidate_memories=candidates,
+                    max_selected=3,
+                )
+            )
+        )
+    except Exception as exc:
+        return None, LearningMemoryRerankDiagnostic(
+            skillpath_id=skillpath.skillpath_id,
+            status="failed",
+            candidate_memory_count=len(candidates),
+            error_summary=f"{type(exc).__name__}: {exc}",
+        )
+
+    return rerank_result, LearningMemoryRerankDiagnostic(
+        skillpath_id=skillpath.skillpath_id,
+        status="reranked",
+        candidate_memory_count=len(candidates),
+        selected_memory_ids=rerank_result.selected_memory_ids,
+        teaching_action=rerank_result.teaching_action.value,
+        focused_concepts=rerank_result.focused_concepts,
+        guidance_present=bool(rerank_result.guidance),
+    )
 
 
 def _build_learning_memory_retrieval_diagnostic(
@@ -230,6 +312,12 @@ def content_worker(state: ContentGenerationState):
         context=learning_memory_context,
         error=retrieval_error,
     )
+    memory_rerank_result, memory_rerank_diagnostic = (
+        _rerank_learning_memory_for_content(
+            skillpath=skillpath,
+            context=learning_memory_context,
+        )
+    )
 
     request = AdkContentGenerationRequest(
         goal=goal_spec,
@@ -240,12 +328,16 @@ def content_worker(state: ContentGenerationState):
         ),
         content_plan=content_plan,
         learning_memory_context=learning_memory_context,
+        memory_rerank_result=memory_rerank_result,
     )
     response: AdkContentGenerationOutput = generate_skillpath_content(request)
 
     update = {
         "learning_memory_retrieval_diagnostics_by_skillpath": {
             skillpath.skillpath_id: memory_diagnostic
+        },
+        "learning_memory_rerank_diagnostics_by_skillpath": {
+            skillpath.skillpath_id: memory_rerank_diagnostic
         },
         "content_drafts": [
             {
@@ -267,6 +359,10 @@ def content_worker(state: ContentGenerationState):
     if learning_memory_context is not None:
         update["learning_memory_contexts_by_skillpath"] = {
             skillpath.skillpath_id: learning_memory_context
+        }
+    if memory_rerank_result is not None:
+        update["learning_memory_rerank_results_by_skillpath"] = {
+            skillpath.skillpath_id: memory_rerank_result
         }
 
     return update

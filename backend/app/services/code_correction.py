@@ -2,12 +2,14 @@ from app.schema.entities import (
     CodeCorrectionRequest,
     CodeCorrectionResult,
     CodeSubmissionResult,
+    LearnerMemoryNote,
+    MemoryRerankRequest,
     RecordAndConsolidateAttemptResult,
     RecordCodingProblemAttemptInput,
     RetrieveLearningMemoryInput,
 )
-from app.schema.enums import AttemptCorrectness
-from app.services import learning_memory
+from app.schema.enums import AttemptCorrectness, MemoryRerankPurpose
+from app.services import memory_service
 from app.validators.deepagent_validator import validate_code_submission
 from app.validators.schemas import CodeValidationRequest, CodeValidationResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,6 +73,24 @@ def _derive_suggested_focus(request: CodeCorrectionRequest) -> list[str]:
     return ordered_focus
 
 
+def _candidate_memories_from_context(context) -> list[LearnerMemoryNote]:
+    candidates: list[LearnerMemoryNote] = []
+    seen: set[str] = set()
+    for group in (
+        context.relevant_notes,
+        context.active_error_patterns,
+        context.teaching_heuristics,
+        context.mastery_signals,
+        context.background_notes,
+    ):
+        for note in group:
+            if note.memory_id in seen:
+                continue
+            seen.add(note.memory_id)
+            candidates.append(note)
+    return candidates
+
+
 def build_correction_request_from_validation(
     *,
     user_id: str,
@@ -105,7 +125,7 @@ async def process_code_correction(
     feedback_summary = _derive_feedback_summary(request, inferred_correctness)
     query_text = _derive_query_text(request, feedback_summary)
 
-    retrieval_context = await learning_memory.retrieve_learning_memory(
+    retrieval_context = await memory_service.retrieve_learning_memory(
         RetrieveLearningMemoryInput(
             user_id=request.user_id,
             query_text=query_text,
@@ -117,8 +137,18 @@ async def process_code_correction(
         ),
         session,
     )
+    memory_rerank = await memory_service.rerank_memories(
+        MemoryRerankRequest(
+            purpose=MemoryRerankPurpose.CODE_CORRECTION,
+            task_context=query_text,
+            learner_context=feedback_summary,
+            recent_attempts=retrieval_context.recent_attempts,
+            candidate_memories=_candidate_memories_from_context(retrieval_context),
+            max_selected=3,
+        )
+    )
 
-    saved_attempt, updated_notes = await learning_memory.record_and_consolidate_attempt(
+    saved_attempt, updated_notes = await memory_service.record_and_consolidate_attempt(
         RecordCodingProblemAttemptInput(
             user_id=request.user_id,
             skillpath_id=request.skillpath_id,
@@ -146,6 +176,7 @@ async def process_code_correction(
             updated_notes=updated_notes,
         ),
         suggested_focus=_derive_suggested_focus(request),
+        memory_rerank=memory_rerank,
     )
 
 
