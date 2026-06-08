@@ -200,6 +200,7 @@ async def cleanup_user(session_factory: async_sessionmaker, user_id: str) -> Non
 
 async def main() -> None:
     user_id = f"learning-director-smoke-{uuid4()}"
+    goal_id = f"goal-{uuid4()}"
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     use_real_content_graph = os.getenv("LEARNING_DIRECTOR_SMOKE_REAL_CONTENT") == "1"
@@ -207,6 +208,7 @@ async def main() -> None:
     print("Starting learning director smoke test")
     print("Make sure the MCP server is running at http://localhost:8001/mcp")
     print(f"Using fake user_id: {user_id}")
+    print(f"Using fake goal_id: {goal_id}")
     if use_real_content_graph:
         print("Using real content graph and real ADK content generator.")
     else:
@@ -219,7 +221,7 @@ async def main() -> None:
             await conn.run_sync(Base.metadata.create_all)
 
         async with session_factory() as session:
-            await goal_service.save_goal(user_id, make_goal(), session)
+            await goal_service.save_goal(user_id, make_goal(), session, goal_id=goal_id)
             await learning_profile_service.save_learning_profile(
                 user_id, make_profile(), session
             )
@@ -233,16 +235,25 @@ async def main() -> None:
                     {
                         "role": "user",
                         "content": (
+                            f"CURRENT_USER_ID: {user_id}\n"
+                            f"CURRENT_GOAL_ID: {goal_id}\n\n"
                             "My learning goal and learning profile are already saved in the system. "
-                            "Please load them with your tools, create my learning roadmap, review it, "
+                            "Please load the saved goal with this goal_id and load my learning profile "
+                            "with this user_id using your tools. Then create my learning roadmap, review it, "
                             "fix any real issues, generate learning content for every skillpath, "
                             "save that content to the database, and tell me when it is ready."
                         ),
                     }
                 ]
             },
-            context={"user_id": user_id},
-            config={"configurable": {"thread_id": f"thread-{user_id}"}},
+            context={"user_id": user_id, "goal_id": goal_id},
+            config={
+                "configurable": {
+                    "thread_id": f"thread-{user_id}",
+                    "user_id": user_id,
+                    "goal_id": goal_id,
+                }
+            },
         )
 
         print("\n=== FINAL AGENT MESSAGE ===")

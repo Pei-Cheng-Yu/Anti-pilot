@@ -7,22 +7,28 @@ from app.langgraph.learning_director.agent import (
     create_learning_director,
     inject_user_id,
     run_planner,
+    tool_goal_id,
+    tool_user_id,
 )
 from app.schema.entities import GoalSpec, LearningProfile
 from langchain.tools import ToolRuntime
 
 
 class FakeMCPRequest:
-    def __init__(self, *, name: str, args: dict, runtime_context):
+    def __init__(self, *, name: str, args: dict, runtime_context, runtime_state=None):
         self.name = name
         self.args = args
-        self.runtime = SimpleNamespace(context=runtime_context)
+        self.runtime = SimpleNamespace(
+            context=runtime_context,
+            state=runtime_state or {},
+        )
 
     def override(self, *, args: dict):
         return FakeMCPRequest(
             name=self.name,
             args=args,
             runtime_context=self.runtime.context,
+            runtime_state=self.runtime.state,
         )
 
 
@@ -43,6 +49,32 @@ def _runtime_with_context(context: dict) -> ToolRuntime:
     return ToolRuntime(
         state={},
         context=context,
+        config={},
+        stream_writer=lambda _chunk: None,
+        tool_call_id=None,
+        store=None,
+        execution_info=None,
+        server_info=None,
+    )
+
+
+def _runtime_with_configurable(configurable: dict) -> ToolRuntime:
+    return ToolRuntime(
+        state={},
+        context=None,
+        config={"configurable": configurable},
+        stream_writer=lambda _chunk: None,
+        tool_call_id=None,
+        store=None,
+        execution_info=None,
+        server_info=None,
+    )
+
+
+def _runtime_with_state_messages(content: str) -> ToolRuntime:
+    return ToolRuntime(
+        state={"messages": [{"role": "human", "content": content}]},
+        context=None,
         config={},
         stream_writer=lambda _chunk: None,
         tool_call_id=None,
@@ -84,6 +116,58 @@ async def test_learning_director_interceptor_requires_user_id_when_context_missi
 
     with pytest.raises(ValueError, match="user_id"):
         await inject_user_id(request, handler)
+
+
+@pytest.mark.asyncio
+async def test_learning_director_interceptor_recovers_ids_from_state_messages():
+    captured = {}
+    request = FakeMCPRequest(
+        name="goal_get_goal",
+        args={},
+        runtime_context=None,
+        runtime_state={
+            "messages": [
+                {
+                    "role": "human",
+                    "content": (
+                        "Please build the roadmap.\n"
+                        "CURRENT_USER_ID: user-from-message\n"
+                        "CURRENT_GOAL_ID: goal-from-message"
+                    ),
+                }
+            ]
+        },
+    )
+
+    async def handler(modified_request):
+        captured["args"] = modified_request.args
+        return {"ok": True}
+
+    result = await inject_user_id(request, handler)
+
+    assert result == {"ok": True}
+    assert captured["args"] == {
+        "user_id": "user-from-message",
+        "goal_id": "goal-from-message",
+    }
+
+
+def test_learning_director_local_tools_recover_ids_from_state_messages():
+    runtime = _runtime_with_state_messages(
+        "CURRENT_USER_ID: user-from-message\nCURRENT_GOAL_ID: goal-from-message"
+    )
+
+    assert tool_user_id(runtime, None) == "user-from-message"
+    assert tool_goal_id(runtime, None) == "goal-from-message"
+
+
+def test_learning_director_local_tools_recover_ids_from_configurable():
+    runtime = _runtime_with_configurable(
+        {"user_id": "user-from-config", "goal_id": "goal-from-config"}
+    )
+
+    assert tool_user_id(runtime, None) == "user-from-config"
+    assert tool_goal_id(runtime, None) == "goal-from-config"
 
 
 def _goal() -> GoalSpec:

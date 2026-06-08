@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from typing import NotRequired, TypedDict
 
 from app.db.session import get_session
@@ -37,6 +38,61 @@ def learning_director_model() -> str:
     return os.getenv("LEARNING_DIRECTOR_MODEL", LEARNING_DIRECTOR_MODEL)
 
 
+def _message_content(message) -> str:
+    if isinstance(message, dict):
+        content = message.get("content")
+    else:
+        content = getattr(message, "content", None)
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def _context_marker_from_state(state: dict | None, marker: str) -> str | None:
+    if not state:
+        return None
+
+    pattern = re.compile(rf"^{re.escape(marker)}:\s*(\S+)\s*$")
+    for message in reversed(state.get("messages", [])):
+        for line in _message_content(message).splitlines():
+            match = pattern.match(line.strip())
+            if match:
+                return match.group(1)
+    return None
+
+
+def _configurable_value(runtime: ToolRuntime[LearningDirectorContext], key: str):
+    config = getattr(runtime, "config", None) or {}
+    configurable = config.get("configurable")
+    if isinstance(configurable, dict):
+        return configurable.get(key)
+    return None
+
+
+def _mcp_tool_accepts_top_level_user_id(tool_name: str) -> bool:
+    top_level_memory_tools = {
+        "learning_memory_get_skill_mastery_state",
+        "learning_memory_update_memory_note",
+        "learning_memory_resolve_memory_note",
+        "learning_memory_delete_memory_note",
+    }
+    return (
+        tool_name.startswith(("goal_", "learning_profile_", "roadmap_"))
+        or tool_name in top_level_memory_tools
+    )
+
+
 def planner_roadmap_id(result: dict) -> str:
     roadmap_id = result.get("roadmap_id") or result.get("roadmap_uuid")
     if not roadmap_id:
@@ -48,7 +104,12 @@ def tool_user_id(
     runtime: ToolRuntime[LearningDirectorContext], user_id: str | None
 ) -> str:
     context = runtime.context or {}
-    resolved_user_id = context.get("user_id") or user_id
+    resolved_user_id = (
+        context.get("user_id")
+        or user_id
+        or _configurable_value(runtime, "user_id")
+        or _context_marker_from_state(runtime.state, "CURRENT_USER_ID")
+    )
     if not resolved_user_id:
         raise ValueError(
             "Learning Director tools require user_id from runtime context or "
@@ -61,7 +122,12 @@ def tool_goal_id(
     runtime: ToolRuntime[LearningDirectorContext], goal_id: str | None
 ) -> str:
     context = runtime.context or {}
-    resolved_goal_id = context.get("goal_id") or goal_id
+    resolved_goal_id = (
+        context.get("goal_id")
+        or goal_id
+        or _configurable_value(runtime, "goal_id")
+        or _context_marker_from_state(runtime.state, "CURRENT_GOAL_ID")
+    )
     if not resolved_goal_id:
         raise ValueError(
             "Learning Director planner requires goal_id from runtime context or "
@@ -189,8 +255,20 @@ async def inject_user_id(
     """Inject runtime user_id into MCP tool calls that accept a user_id argument."""
     runtime = request.runtime
     context = runtime.context or {}
+    state = getattr(runtime, "state", None)
     args = dict(request.args)
-    user_id = context.get("user_id") or args.get("user_id")
+    user_id = (
+        context.get("user_id")
+        or args.get("user_id")
+        or _configurable_value(runtime, "user_id")
+        or _context_marker_from_state(state, "CURRENT_USER_ID")
+    )
+    goal_id = (
+        context.get("goal_id")
+        or args.get("goal_id")
+        or _configurable_value(runtime, "goal_id")
+        or _context_marker_from_state(state, "CURRENT_GOAL_ID")
+    )
     managed_tool_prefixes = (
         "goal_",
         "learning_profile_",
@@ -205,15 +283,17 @@ async def inject_user_id(
                 "Learning Director MCP tool calls require user_id from runtime "
                 "context or explicit tool arguments."
             )
-        if "user_id" in args:
-            modified_args = {**args, "user_id": user_id}
-        else:
-            modified_args = args
+        modified_args = args
+        if "user_id" in args or _mcp_tool_accepts_top_level_user_id(request.name):
+            modified_args = {**modified_args, "user_id": user_id}
+        if goal_id and (request.name == "goal_get_goal" or "goal_id" in args):
+            modified_args = {**modified_args, "goal_id": goal_id}
+        if "user_id" not in args:
             for nested_key in ("note", "attempt", "query", "request"):
-                nested_value = args.get(nested_key)
+                nested_value = modified_args.get(nested_key)
                 if isinstance(nested_value, dict):
                     modified_args = {
-                        **args,
+                        **modified_args,
                         nested_key: {**nested_value, "user_id": user_id},
                     }
                     break
