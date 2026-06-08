@@ -3,6 +3,7 @@ from app.schema.entities import (
     GoalSpec,
     LearningMemoryContext,
     LearningProfile,
+    MemoryRerankResult,
     MilestoneItem,
     SkillPathItem,
 )
@@ -29,6 +30,13 @@ class AdkContentGenerationRequest(BaseModel):
     learning_memory_context: LearningMemoryContext | None = Field(
         default=None,
         description="Optional learner memory context used to personalize content.",
+    )
+    memory_rerank_result: MemoryRerankResult | None = Field(
+        default=None,
+        description=(
+            "Optional advisory selected memories and teaching guidance for this "
+            "content-generation request."
+        ),
     )
 
 

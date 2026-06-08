@@ -19,10 +19,20 @@ from app.schema.entities import (
     LearnerMemoryNote,
     LearningMemoryContext,
     LearningProfile,
+    MemoryRerankResult,
     MilestoneItem,
+    SelectedMemoryMetadata,
     SkillPathItem,
 )
-from app.schema.enums import ExampleStyle, LearningContentType, MemoryType, PracticeMode
+from app.schema.enums import (
+    ExampleStyle,
+    LearningContentType,
+    MemoryRerankPurpose,
+    MemoryType,
+    PracticeMode,
+    TeachingAction,
+)
+from app.services import memory_service
 from dotenv import load_dotenv
 
 # Keep test environment behavior aligned with the other graph-level tests.
@@ -316,6 +326,65 @@ def test_learning_content_prompt_includes_seeded_memory_context(monkeypatch):
     assert "await async database calls" in prompt
 
 
+def test_learning_content_graph_reranks_memory_context_for_generation(monkeypatch):
+    captured_requests: list[AdkContentGenerationRequest] = []
+    captured_rerank_requests = []
+    seeded_context = _make_memory_context()
+
+    def fake_generate_with_memory(request):
+        captured_requests.append(request)
+        return _fake_generate_skillpath_content(request)
+
+    async def fake_rerank_memories(request, *, advisor=None):
+        captured_rerank_requests.append(request)
+        selected_note = seeded_context.active_error_patterns[0]
+        return MemoryRerankResult(
+            purpose=MemoryRerankPurpose.CONTENT_GENERATION,
+            selected_memories=[
+                SelectedMemoryMetadata(
+                    memory_id=selected_note.memory_id,
+                    memory_type=selected_note.memory_type,
+                    title=selected_note.title,
+                    reason="Use this error pattern to shape the new lesson.",
+                )
+            ],
+            teaching_action=TeachingAction.QUICK_RECAP_THEN_HINT,
+            focused_concepts=["fastapi.async", "missing await"],
+            guidance="Start with a short recap about awaiting async DB calls.",
+        )
+
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes.generate_skillpath_content",
+        fake_generate_with_memory,
+    )
+    monkeypatch.setattr(
+        "app.langgraph.content_generation.graphs.generate_learning_content.nodes._retrieve_learning_memory_context",
+        lambda *_args, **_kwargs: seeded_context,
+        raising=False,
+    )
+    monkeypatch.setattr(memory_service, "rerank_memories", fake_rerank_memories)
+
+    state = _make_state()
+    state["user_id"] = "user-1"
+
+    graph = build_learning_content_graph()
+    result = graph.invoke(state)
+
+    assert captured_rerank_requests
+    assert all(
+        request.purpose == MemoryRerankPurpose.CONTENT_GENERATION
+        for request in captured_rerank_requests
+    )
+    sp2_request = next(
+        item for item in captured_requests if item.skillpath.skillpath_id == "sp-2"
+    )
+    assert sp2_request.memory_rerank_result is not None
+    assert sp2_request.memory_rerank_result.selected_memory_ids == ["mem-fastapi-await"]
+    diagnostics = result["learning_memory_rerank_diagnostics_by_skillpath"]
+    assert diagnostics["sp-2"].status == "reranked"
+    assert diagnostics["sp-2"].selected_memory_ids == ["mem-fastapi-await"]
+
+
 def test_learning_content_graph_reports_skipped_memory_without_user(monkeypatch):
     captured_requests: list[AdkContentGenerationRequest] = []
 
@@ -369,6 +438,12 @@ def test_learning_content_graph_reports_empty_memory_context(monkeypatch):
     assert all(item.status == "retrieved_empty" for item in diagnostics.values())
     assert all(item.user_id_present is True for item in diagnostics.values())
     assert all(item.relevant_note_count == 0 for item in diagnostics.values())
+    rerank_diagnostics = result["learning_memory_rerank_diagnostics_by_skillpath"]
+    assert set(rerank_diagnostics) == {"sp-1", "sp-2"}
+    assert all(
+        item.status == "skipped_no_memory" for item in rerank_diagnostics.values()
+    )
+    assert all(item.candidate_memory_count == 0 for item in rerank_diagnostics.values())
 
 
 def test_learning_content_graph_reports_failed_memory_retrieval(monkeypatch):
