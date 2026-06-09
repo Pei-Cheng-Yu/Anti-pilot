@@ -1,6 +1,6 @@
 ---
 name: roadmap-generation
-description: Generate and review personalized learning roadmaps using saved user data. Use when the user asks to create, generate, review, revise, finalize a learning roadmap or study plan, or generate learning content for a roadmap. Fetch the saved goal and learning profile using MCP tools first, then run the planner, review the roadmap, fix real issues directly with MCP update tools, optionally generate learning content when requested, and report the final roadmap summary.
+description: Generate and review personalized learning roadmaps using saved user data. Use when the user asks to create, generate, review, revise, finalize a learning roadmap or study plan, or generate learning content for a roadmap. Fetch the saved goal and learning profile using MCP tools first, then run the planner, review the roadmap, fix real issues directly with MCP update tools, generate learning content for every skillpath when the handoff asks for generated materials, and report the final roadmap summary.
 ---
 
 # Roadmap Generation
@@ -18,8 +18,8 @@ Follow this workflow exactly when the user asks for roadmap creation or roadmap 
 7. Review the roadmap before replying.
 8. After roadmap review, mark skillpath content-planning guidance using roadmap MCP update tools.
 9. Fix only genuine issues using roadmap MCP update tools.
-10. If the user also asks for generated learning content, call `run_content_generator` with the saved `roadmap_id`, fetched `goal`, and fetched `profile`.
-11. If content generation was requested, fetch the full roadmap again and confirm generated contents are present before replying.
+10. When the Discovery handoff asks for generated learning materials, call `run_content_generator` with the saved `roadmap_id`, fetched `goal`, and fetched `profile`.
+11. Generate learning content for every skillpath, then fetch the full roadmap again and confirm generated contents are present before replying.
 12. Report that the roadmap is ready.
 
 ## Tool usage rules
@@ -62,7 +62,7 @@ Also review skillpaths for post-plan content guidance:
 
 ## Content generation rules
 
-- Generate learning content only when the user asks for content, lessons, articles, exercises, quizzes, or generated learning materials.
+- Generate learning content when the user asks for content, lessons, articles, exercises, quizzes, generated learning materials, or when a Discovery handoff explicitly asks you to generate learning content for every skillpath.
 - Do not call `run_content_generator` before reviewing and updating the saved roadmap.
 - After content generation, fetch the roadmap again and verify that skillpaths have `learning_contents`.
 - If no content was generated, tell the user plainly instead of implying that content is saved.

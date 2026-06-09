@@ -36,8 +36,11 @@ def _to_learning_content_item(row: LearningContentModel) -> LearningContentItem:
     return learning_content_adapter.validate_python(row.payload)
 
 
-def _to_skillpath_item(row: SkillPathModel) -> SkillPathItem:
+def _to_skillpath_item(
+    row: SkillPathModel, roadmap_id: str | None = None
+) -> SkillPathItem:
     return SkillPathItem(
+        roadmap_id=roadmap_id,
         skillpath_id=row.skillpath_id,
         milestone_id=row.milestone_id,
         title=row.title,
@@ -160,7 +163,7 @@ async def get_roadmap_full(
     milestones = []
     for m in sorted(roadmap.milestones, key=lambda x: x.order_index):
         skillpaths = _toposort_skillpaths(
-            [_to_skillpath_item(sp) for sp in m.skillpaths]
+            [_to_skillpath_item(sp, roadmap_id=m.roadmap_id) for sp in m.skillpaths]
         )
         milestones.append(
             MilestoneWithSkillPaths(
@@ -326,7 +329,7 @@ async def update_skillpath(
 ) -> SkillPathItem:
     """Patch any fields on a skillpath. Agent calls this during review."""
     result = await session.execute(
-        select(SkillPathModel)
+        select(SkillPathModel, RoadmapModel.roadmap_id)
         .join(
             MilestoneModel, SkillPathModel.milestone_id == MilestoneModel.milestone_id
         )
@@ -337,13 +340,14 @@ async def update_skillpath(
         )
         .options(selectinload(SkillPathModel.learning_contents))
     )
-    row = result.scalar_one_or_none()
-    if not row:
+    found = result.one_or_none()
+    if not found:
         raise ValueError(f"SkillPath {skillpath_id} not found for user {user_id}")
+    row, roadmap_id = found
     for key, value in fields.items():
         setattr(row, key, value)
     await session.commit()
-    return _to_skillpath_item(row)
+    return _to_skillpath_item(row, roadmap_id=roadmap_id)
 
 
 async def save_generated_skillpaths(
@@ -438,12 +442,24 @@ async def save_generated_skillpaths(
     session.expire_all()
 
     reloaded = await session.execute(
-        select(SkillPathModel)
-        .where(SkillPathModel.skillpath_id.in_(skillpath_ids))
+        select(SkillPathModel, RoadmapModel.roadmap_id)
+        .join(
+            MilestoneModel, SkillPathModel.milestone_id == MilestoneModel.milestone_id
+        )
+        .join(RoadmapModel, MilestoneModel.roadmap_id == RoadmapModel.roadmap_id)
+        .where(
+            SkillPathModel.skillpath_id.in_(skillpath_ids),
+            RoadmapModel.user_id == user_id,
+        )
         .options(selectinload(SkillPathModel.learning_contents))
     )
-    reloaded_by_id = {row.skillpath_id: row for row in reloaded.scalars()}
+    reloaded_by_id = {
+        row.skillpath_id: (row, roadmap_id) for row, roadmap_id in reloaded.all()
+    }
     return [
-        _to_skillpath_item(reloaded_by_id[skillpath_id])
+        _to_skillpath_item(
+            reloaded_by_id[skillpath_id][0],
+            roadmap_id=reloaded_by_id[skillpath_id][1],
+        )
         for skillpath_id in skillpath_ids
     ]

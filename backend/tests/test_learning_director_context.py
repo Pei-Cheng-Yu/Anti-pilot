@@ -6,6 +6,7 @@ from app.langgraph.learning_director import agent as learning_director_agent
 from app.langgraph.learning_director.agent import (
     create_learning_director,
     inject_user_id,
+    run_content_generator,
     run_planner,
     tool_goal_id,
     tool_user_id,
@@ -299,12 +300,222 @@ async def test_run_planner_uses_goal_id_from_runtime_context(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_planner_requires_user_id_when_runtime_context_missing():
+async def test_run_planner_resolves_goal_id_from_matching_goal(monkeypatch):
+    captured = {}
+
+    class FakePlanner:
+        def invoke(self, state):
+            return {
+                "roadmap_id": "roadmap-123",
+                "milestones": [],
+                "skillpaths": [],
+            }
+
+    async def fake_save_roadmap(**kwargs):
+        captured["saved"] = kwargs
+
+    async def fake_resolve_goal_id(user_id, goal):
+        captured["resolved_from"] = {"user_id": user_id, "goal": goal}
+        return "goal-resolved"
+
+    class FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(learning_director_agent, "_planner", FakePlanner())
+    monkeypatch.setattr(
+        learning_director_agent.roadmap_service,
+        "save_roadmap",
+        fake_save_roadmap,
+    )
+    monkeypatch.setattr(
+        learning_director_agent,
+        "resolve_goal_id_from_saved_goal",
+        fake_resolve_goal_id,
+    )
+    monkeypatch.setattr(learning_director_agent, "get_session", lambda: FakeSession())
+
+    result = await run_planner.ainvoke(
+        {
+            "goal": _goal(),
+            "profile": _profile(),
+            "runtime": _runtime_without_context(),
+            "user_id": "user-123",
+        }
+    )
+
+    assert result == {"roadmap_id": "roadmap-123"}
+    assert captured["resolved_from"]["user_id"] == "user-123"
+    assert captured["saved"]["goal_id"] == "goal-resolved"
+
+
+@pytest.mark.asyncio
+async def test_run_planner_resolves_user_and_goal_from_matching_goal(monkeypatch):
+    captured = {}
+
+    class FakePlanner:
+        def invoke(self, state):
+            return {
+                "roadmap_id": "roadmap-123",
+                "milestones": [],
+                "skillpaths": [],
+            }
+
+    async def fake_save_roadmap(**kwargs):
+        captured["saved"] = kwargs
+
+    async def fake_resolve_goal_context(goal):
+        captured["resolved_from_goal"] = goal
+        return "user-resolved", "goal-resolved"
+
+    class FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(learning_director_agent, "_planner", FakePlanner())
+    monkeypatch.setattr(
+        learning_director_agent.roadmap_service,
+        "save_roadmap",
+        fake_save_roadmap,
+    )
+    monkeypatch.setattr(
+        learning_director_agent,
+        "resolve_goal_context_from_saved_goal",
+        fake_resolve_goal_context,
+    )
+    monkeypatch.setattr(learning_director_agent, "get_session", lambda: FakeSession())
+
+    result = await run_planner.ainvoke(
+        {
+            "goal": _goal(),
+            "profile": _profile(),
+            "runtime": _runtime_without_context(),
+        }
+    )
+
+    assert result == {"roadmap_id": "roadmap-123"}
+    assert captured["resolved_from_goal"] == _goal()
+    assert captured["saved"]["user_id"] == "user-resolved"
+    assert captured["saved"]["goal_id"] == "goal-resolved"
+
+
+@pytest.mark.asyncio
+async def test_run_planner_requires_user_id_when_goal_context_cannot_be_resolved(
+    monkeypatch,
+):
     runtime = _runtime_without_context()
 
-    with pytest.raises(ValueError, match="user_id"):
+    async def fake_resolve_goal_context(goal):
+        raise ValueError("could not resolve")
+
+    monkeypatch.setattr(
+        learning_director_agent,
+        "resolve_goal_context_from_saved_goal",
+        fake_resolve_goal_context,
+    )
+
+    with pytest.raises(ValueError, match="could not resolve"):
         await run_planner.ainvoke(
             {
+                "goal": _goal(),
+                "profile": _profile(),
+                "runtime": runtime,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_content_generator_resolves_user_from_roadmap_when_context_missing(
+    monkeypatch,
+):
+    captured = {}
+
+    async def fake_resolve_user_id(roadmap_id):
+        captured["resolved_roadmap_id"] = roadmap_id
+        return "user-resolved"
+
+    async def fake_get_roadmap_full(user_id, roadmap_id, session):
+        captured["get"] = {"user_id": user_id, "roadmap_id": roadmap_id}
+        return SimpleNamespace(milestones=[])
+
+    async def fake_save_generated_skillpaths(**kwargs):
+        captured["save"] = kwargs
+
+    class FakeContentGenerator:
+        def invoke(self, state):
+            captured["content_state"] = state
+            return {"generated_skillpaths": []}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(
+        learning_director_agent,
+        "resolve_user_id_from_roadmap_id",
+        fake_resolve_user_id,
+    )
+    monkeypatch.setattr(
+        learning_director_agent.roadmap_service,
+        "get_roadmap_full",
+        fake_get_roadmap_full,
+    )
+    monkeypatch.setattr(
+        learning_director_agent.roadmap_service,
+        "save_generated_skillpaths",
+        fake_save_generated_skillpaths,
+    )
+    monkeypatch.setattr(
+        learning_director_agent, "_content_generator", FakeContentGenerator()
+    )
+    monkeypatch.setattr(learning_director_agent, "get_session", lambda: FakeSession())
+
+    result = await run_content_generator.ainvoke(
+        {
+            "roadmap_id": "roadmap-123",
+            "goal": _goal(),
+            "profile": _profile(),
+            "runtime": _runtime_without_context(),
+        }
+    )
+
+    assert result == {
+        "roadmap_id": "roadmap-123",
+        "generated_skillpath_count": 0,
+    }
+    assert captured["resolved_roadmap_id"] == "roadmap-123"
+    assert captured["get"] == {"user_id": "user-resolved", "roadmap_id": "roadmap-123"}
+    assert captured["save"]["user_id"] == "user-resolved"
+
+
+@pytest.mark.asyncio
+async def test_run_content_generator_requires_user_id_when_roadmap_owner_missing(
+    monkeypatch,
+):
+    runtime = _runtime_without_context()
+
+    async def fake_resolve_user_id(roadmap_id):
+        raise ValueError("roadmap owner missing")
+
+    monkeypatch.setattr(
+        learning_director_agent,
+        "resolve_user_id_from_roadmap_id",
+        fake_resolve_user_id,
+    )
+
+    with pytest.raises(ValueError, match="roadmap owner missing"):
+        await run_content_generator.ainvoke(
+            {
+                "roadmap_id": "roadmap-123",
                 "goal": _goal(),
                 "profile": _profile(),
                 "runtime": runtime,

@@ -36,10 +36,23 @@ SKILL_PATH = (
     / "discovery-agent"
     / "SKILL.md"
 )
+LEARNING_DIRECTOR_SKILL_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "app"
+    / "langgraph"
+    / "learning_director"
+    / "skills"
+    / "roadmap-generation"
+    / "SKILL.md"
+)
 
 
 def _skill_text() -> str:
     return SKILL_PATH.read_text(encoding="utf-8")
+
+
+def _learning_director_skill_text() -> str:
+    return LEARNING_DIRECTOR_SKILL_PATH.read_text(encoding="utf-8")
 
 
 def test_parse_discovery_response_accepts_json_text():
@@ -185,6 +198,26 @@ def test_discovery_contract_passes_current_user_id_to_learning_director_handoff(
 
     assert "CURRENT_USER_ID" in DISCOVERY_SYSTEM_PROMPT
     assert "CURRENT_USER_ID" in text
+
+
+def test_discovery_contract_requests_full_content_generation_in_handoff():
+    text = _skill_text()
+
+    required_phrase = "generate learning content for every skillpath"
+    assert required_phrase in DISCOVERY_SYSTEM_PROMPT
+    assert required_phrase in text
+
+
+def test_learning_director_contract_requires_content_generation_after_handoff():
+    text = _learning_director_skill_text()
+
+    required_phrases = [
+        "call `run_content_generator` with the saved `roadmap_id`",
+        "Generate learning content for every skillpath",
+        "confirm generated contents are present",
+    ]
+    for phrase in required_phrases:
+        assert phrase in text
 
 
 def test_discovery_context_preserves_conversation_id_for_goal_binding():
