@@ -3,6 +3,7 @@ import os
 import re
 from typing import NotRequired, TypedDict
 
+from app.db.model import GoalModel, RoadmapModel
 from app.db.session import get_session
 from app.langgraph.content_generation.graphs.generate_learning_content.graph import (
     build_learning_content_graph,
@@ -16,6 +17,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
+from sqlalchemy import select
 
 load_dotenv()
 
@@ -136,6 +138,96 @@ def tool_goal_id(
     return resolved_goal_id
 
 
+async def resolve_goal_id_from_saved_goal(user_id: str, goal: GoalSpec) -> str:
+    async with get_session() as session:
+        result = await session.execute(
+            select(GoalModel.goal_id).where(
+                GoalModel.user_id == user_id,
+                GoalModel.title == goal.title,
+                GoalModel.description == goal.description,
+                GoalModel.target_outcome == goal.target_outcome,
+                GoalModel.deadline == goal.deadline,
+            )
+        )
+        goal_ids = list(result.scalars())
+
+    if len(goal_ids) == 1:
+        return goal_ids[0]
+    if not goal_ids:
+        raise ValueError(
+            "Learning Director planner could not resolve goal_id from the saved "
+            "goal for this user."
+        )
+    raise ValueError(
+        "Learning Director planner found multiple saved goals matching the "
+        "provided GoalSpec; pass goal_id explicitly."
+    )
+
+
+async def resolve_goal_context_from_goal_id(goal_id: str) -> tuple[str, str]:
+    async with get_session() as session:
+        result = await session.execute(
+            select(GoalModel.user_id).where(GoalModel.goal_id == goal_id)
+        )
+        user_ids = list(result.scalars())
+
+    if len(user_ids) == 1:
+        return user_ids[0], goal_id
+    if not user_ids:
+        raise ValueError(
+            "Learning Director planner could not resolve user_id from the saved "
+            "goal_id."
+        )
+    raise ValueError(
+        "Learning Director planner found multiple goals with the provided goal_id."
+    )
+
+
+async def resolve_goal_context_from_saved_goal(goal: GoalSpec) -> tuple[str, str]:
+    async with get_session() as session:
+        result = await session.execute(
+            select(GoalModel.user_id, GoalModel.goal_id).where(
+                GoalModel.title == goal.title,
+                GoalModel.description == goal.description,
+                GoalModel.target_outcome == goal.target_outcome,
+                GoalModel.deadline == goal.deadline,
+            )
+        )
+        matches = list(result.all())
+
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(
+            "Learning Director planner could not resolve user_id or goal_id from "
+            "the saved goal."
+        )
+    raise ValueError(
+        "Learning Director planner found multiple saved goals matching the "
+        "provided GoalSpec; pass user_id and goal_id explicitly."
+    )
+
+
+async def resolve_user_id_from_roadmap_id(roadmap_id: str) -> str:
+    async with get_session() as session:
+        result = await session.execute(
+            select(RoadmapModel.user_id).where(RoadmapModel.roadmap_id == roadmap_id)
+        )
+        user_ids = list(result.scalars())
+
+    if len(user_ids) == 1:
+        return user_ids[0]
+    if not user_ids:
+        raise ValueError(
+            "Learning Director content generator could not resolve user_id from "
+            "the saved roadmap_id."
+        )
+    raise ValueError(
+        "Learning Director content generator found multiple roadmaps with the "
+        "provided roadmap_id."
+    )
+
+
 @tool(parse_docstring=True)
 async def run_planner(
     goal: GoalSpec,
@@ -154,8 +246,28 @@ async def run_planner(
         user_id: The current user ID, only needed when runtime context is unavailable.
         goal_id: The current goal ID, only needed when runtime context is unavailable.
     """
-    resolved_user_id = tool_user_id(runtime, user_id)
-    resolved_goal_id = tool_goal_id(runtime, goal_id)
+    try:
+        resolved_goal_id = tool_goal_id(runtime, goal_id)
+    except ValueError:
+        resolved_goal_id = None
+
+    try:
+        resolved_user_id = tool_user_id(runtime, user_id)
+    except ValueError:
+        if resolved_goal_id:
+            resolved_user_id, resolved_goal_id = (
+                await resolve_goal_context_from_goal_id(resolved_goal_id)
+            )
+        else:
+            resolved_user_id, resolved_goal_id = (
+                await resolve_goal_context_from_saved_goal(goal)
+            )
+    else:
+        if not resolved_goal_id:
+            resolved_goal_id = await resolve_goal_id_from_saved_goal(
+                resolved_user_id, goal
+            )
+
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None,
@@ -201,7 +313,10 @@ async def run_content_generator(
         profile: The user's learning profile.
         user_id: The current user ID, only needed when runtime context is unavailable.
     """
-    resolved_user_id = tool_user_id(runtime, user_id)
+    try:
+        resolved_user_id = tool_user_id(runtime, user_id)
+    except ValueError:
+        resolved_user_id = await resolve_user_id_from_roadmap_id(roadmap_id)
 
     async with get_session() as session:
         roadmap = await roadmap_service.get_roadmap_full(

@@ -105,7 +105,7 @@ Handoff occurs only after:
 - Any durable discovery memory notes have been saved with allowed memory types only.
 - The learner confirms they want roadmap generation to start now.
 
-When ready, launch Learning Director with `start_async_task` using `subagent_type` set to `learning_director`. Tell Learning Director to load the saved goal by goal id and the profile by user id through its own tools, generate and persist a roadmap, and generate learning content when appropriate.
+When ready, launch Learning Director with `start_async_task` using `subagent_type` set to `learning_director`. Tell Learning Director to load the saved goal by goal id and the profile by user id through its own tools, generate and persist a roadmap, review and update real issues, generate learning content for every skillpath, and verify that generated `learning_contents` are present before finishing.
 
 Include `CURRENT_USER_ID: <current user_id>` and `CURRENT_GOAL_ID: <current goal_id>` in the Learning Director instructions. Tell Learning Director to pass those exact values to tool calls if runtime context is unavailable.
 

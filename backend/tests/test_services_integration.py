@@ -360,6 +360,7 @@ async def test_roadmap_service_roundtrip_and_scoping(db_session, test_user: str)
     assert len(loaded.milestones) == 1
     assert loaded.milestones[0].title == "Foundations"
     assert len(loaded.milestones[0].skillpaths) == 1
+    assert loaded.milestones[0].skillpaths[0].roadmap_id == roadmap_id
     assert loaded.milestones[0].skillpaths[0].title == "HTTP Basics"
 
     updated_milestone = await roadmap_service.update_milestone(

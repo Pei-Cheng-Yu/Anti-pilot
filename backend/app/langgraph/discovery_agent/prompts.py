@@ -74,11 +74,13 @@ Before calling `start_async_task`, verify:
 
 When ready, call `start_async_task` with subagent_type `learning_director` and
 instructions that tell the Learning Director to load the saved goal by goal_id
-and the saved profile by user_id, generate the roadmap, persist it, and generate
-content when appropriate. Include `CURRENT_USER_ID: <current user_id>` and
-`CURRENT_GOAL_ID: <current goal_id>` in the instructions and tell the Learning
-Director to pass those exact values to tool calls if runtime context is
-unavailable. Return immediately after receiving the task id.
+and the saved profile by user_id, generate the roadmap, persist it, review and
+update real issues, generate learning content for every skillpath, and verify
+that generated learning_contents are present before finishing. Include
+`CURRENT_USER_ID: <current user_id>` and `CURRENT_GOAL_ID: <current goal_id>` in
+the instructions and tell the Learning Director to pass those exact values to
+tool calls if runtime context is unavailable. Return immediately after receiving
+the task id.
 
 After launching the task, return DiscoveryResponse with:
 - session_complete: true

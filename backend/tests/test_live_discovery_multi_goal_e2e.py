@@ -133,11 +133,37 @@ async def _fetch_multi_goal_snapshot(user_id: str) -> dict:
                 )
             ).scalars()
         )
+        content_goal_ids = set(
+            (
+                await session.execute(
+                    select(RoadmapModel.goal_id)
+                    .join(
+                        MilestoneModel,
+                        MilestoneModel.roadmap_id == RoadmapModel.roadmap_id,
+                    )
+                    .join(
+                        SkillPathModel,
+                        SkillPathModel.milestone_id == MilestoneModel.milestone_id,
+                    )
+                    .join(
+                        LearningContentModel,
+                        LearningContentModel.skillpath_id
+                        == SkillPathModel.skillpath_id,
+                    )
+                    .where(
+                        RoadmapModel.user_id == user_id,
+                        RoadmapModel.goal_id.is_not(None),
+                    )
+                    .distinct()
+                )
+            ).scalars()
+        )
 
     return {
         "goals": goals,
         "conversations": conversations,
         "roadmaps": roadmaps,
+        "content_goal_ids": content_goal_ids,
     }
 
 
@@ -150,7 +176,12 @@ async def _wait_for_two_goal_roadmaps(user_id: str, timeout_seconds: int) -> dic
         roadmap_goal_ids = {
             roadmap.goal_id for roadmap in last["roadmaps"] if roadmap.goal_id
         }
-        if len(goal_ids) >= 2 and len(roadmap_goal_ids & goal_ids) >= 2:
+        content_goal_ids = last.get("content_goal_ids", set())
+        if (
+            len(goal_ids) >= 2
+            and len(roadmap_goal_ids & goal_ids) >= 2
+            and len(content_goal_ids & goal_ids) >= 2
+        ):
             return last
         await asyncio.sleep(5)
     return last
@@ -219,6 +250,7 @@ def test_live_discovery_supports_two_goals_and_goal_bound_discussion():
         nonlocal second_goal_id
 
         await _cleanup_user(user_id)
+        completed_successfully = False
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=500.0) as client:
                 first_conversation_id = await _start_conversation(client, user_id)
@@ -316,6 +348,7 @@ def test_live_discovery_supports_two_goals_and_goal_bound_discussion():
                             }
                             for roadmap in roadmaps
                         ],
+                        "content_goal_ids": sorted(snapshot["content_goal_ids"]),
                     }
                 )
 
@@ -324,6 +357,10 @@ def test_live_discovery_supports_two_goals_and_goal_bound_discussion():
                 assert first_goal_id != second_goal_id
                 assert len({goal.goal_id for goal in goals}) >= 2
                 assert {roadmap.goal_id for roadmap in roadmaps if roadmap.goal_id} >= {
+                    first_goal_id,
+                    second_goal_id,
+                }
+                assert snapshot["content_goal_ids"] >= {
                     first_goal_id,
                     second_goal_id,
                 }
@@ -360,9 +397,21 @@ def test_live_discovery_supports_two_goals_and_goal_bound_discussion():
                     }
                 )
                 assert bound_row.goal_id == first_goal_id
+                completed_successfully = True
         finally:
-            if os.getenv("DISCOVERY_E2E_KEEP_DATA") != "1":
+            if completed_successfully and os.getenv("DISCOVERY_E2E_KEEP_DATA") != "1":
                 await _cleanup_user(user_id)
+            elif not completed_successfully:
+                print(
+                    {
+                        "phase": "preserved_failed_live_data",
+                        "reason": (
+                            "Skipping cleanup because async roadmap/content "
+                            "generation may still be running."
+                        ),
+                        "user_id": user_id,
+                    }
+                )
 
     try:
         asyncio.run(run())

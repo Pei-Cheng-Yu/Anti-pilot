@@ -196,6 +196,7 @@ def test_live_discovery_workflow_persists_goal_profile_memory_roadmap_and_conten
     async def run() -> None:
         nonlocal conversation_id, last_response
         await _cleanup_user(user_id)
+        completed_successfully = False
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=500.0) as client:
                 created = await client.post(
@@ -290,9 +291,21 @@ def test_live_discovery_workflow_persists_goal_profile_memory_roadmap_and_conten
             assert outputs["has_milestone"] is True
             assert outputs["has_skillpath"] is True
             assert outputs["has_content"] is True
+            completed_successfully = True
         finally:
-            if os.getenv("DISCOVERY_E2E_KEEP_DATA") != "1":
+            if completed_successfully and os.getenv("DISCOVERY_E2E_KEEP_DATA") != "1":
                 await _cleanup_user(user_id)
+            elif not completed_successfully:
+                print(
+                    {
+                        "phase": "preserved_failed_live_data",
+                        "reason": (
+                            "Skipping cleanup because async roadmap/content "
+                            "generation may still be running."
+                        ),
+                        "user_id": user_id,
+                    }
+                )
 
     try:
         asyncio.run(run())
