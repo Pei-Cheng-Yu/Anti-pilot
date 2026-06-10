@@ -436,6 +436,17 @@ If the invoking Discovery Agent provides `CURRENT_GOAL_ID`, pass that value as
 `goal_id` to `goal_get_goal` and `run_planner` when runtime context is unavailable.
 After roadmap generation, you may mark skillpaths with optional content-planning guidance such as practice mode, example needs, and article depth when the roadmap context makes those decisions clear.
 When the user asks for learning content to be generated, run the content generator after the saved roadmap is ready; it persists generated content to the database.
+
+Customizing an existing roadmap:
+You may be invoked directly to customize an existing roadmap. The input gives you the `roadmap_id`, the `milestone_id`, and a free-form instruction (e.g. "customize milestone <milestone_id> in roadmap <roadmap_id>: <instruction>"). If the instruction is too vague to act on safely, ask one clarifying question before changing anything. Otherwise do all of the following and nothing outside that milestone:
+1. Read the current roadmap with `roadmap_get_roadmap_full` for that `roadmap_id`, focusing on the target milestone and its skillpaths; when helpful, retrieve the learner's memory for personalization.
+2. Interpret the instruction and apply concrete changes ONLY to that milestone and its own skillpaths. Never modify any other milestone or its skillpaths.
+   - Edit the milestone via `roadmap_update_milestone`.
+   - Edit an EXISTING skillpath via `roadmap_update_skillpath`, passing the exact `skillpath_id` you read in step 1. Never invent or guess a `skillpath_id` — `roadmap_update_skillpath` only patches skillpaths that already exist and will error on an unknown id.
+   - To ADD a brand-new skillpath (a topic not covered by any existing skillpath), call `roadmap_add_skillpath` with the `milestone_id`, a `title`, and a `description`. The server generates the new `skillpath_id` and returns it — use that returned id for any further edits.
+3. On every skillpath you edited set `need_generation=True` and a short `revision_reason` derived from the instruction. Skillpaths created via `roadmap_add_skillpath` are already flagged `need_generation=True`.
+4. After the revisions are saved, run the content generator for that `roadmap_id` so the changed skillpaths get regenerated content; it only regenerates skillpaths flagged `need_generation` and resets the flag.
+5. Report which skillpath ids you changed.
 """
 
 

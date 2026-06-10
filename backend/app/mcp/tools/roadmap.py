@@ -51,6 +51,40 @@ async def update_milestone(
 
 
 @roadmap_mcp.tool()
+async def add_skillpath(
+    user_id: str,
+    milestone_id: str,
+    title: str,
+    description: str,
+    estimated_hours: float = 1.0,
+    learning_objectives: list[str] | None = None,
+    prerequisite_skillpath_ids: list[str] | None = None,
+    practice_mode: PracticeMode | None = None,
+) -> SkillPathItem:
+    """
+    Create a NEW skillpath under a milestone.
+
+    Use this when customizing a roadmap and the learner asks for a topic that
+    isn't covered by any existing skillpath. Do NOT call update_skillpath with a
+    made-up id — that only patches existing skillpaths. The server generates the
+    skillpath_id and returns it; the new skillpath is marked need_generation=True
+    so content generation will produce its learning content.
+    """
+    async with get_session() as session:
+        return await service.add_skillpath(
+            user_id=user_id,
+            milestone_id=milestone_id,
+            title=title,
+            description=description,
+            session=session,
+            estimated_hours=estimated_hours,
+            learning_objectives=learning_objectives,
+            prerequisite_skillpath_ids=prerequisite_skillpath_ids,
+            practice_mode=practice_mode.value if practice_mode else None,
+        )
+
+
+@roadmap_mcp.tool()
 async def update_skillpath(
     user_id: str,
     skillpath_id: str,

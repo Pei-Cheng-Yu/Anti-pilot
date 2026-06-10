@@ -22,6 +22,7 @@ from app.schema.entities import (
     SkillPathItem,
 )
 from app.services import goal as goal_service
+from app.services import learning_director_agent_server as ld_agent_server
 from app.services import learning_profile as learning_profile_service
 from app.services import memory_service
 from app.services import roadmap as roadmap_service
@@ -403,6 +404,69 @@ async def customize_milestone(
             )
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.post("/v1/roadmaps/{roadmap_id}/milestones/{milestone_id}/customize-agent")
+async def customize_milestone_agent(
+    roadmap_id: str,
+    milestone_id: str,
+    request: MilestoneCustomizationRequest,
+    user_id: str = Query(default=DEFAULT_USER_ID),
+):
+    """
+    Agent-driven customization: hand the free-form instruction to the Learning
+    Director (run on the agent-server) which revises the milestone + its skillpaths
+    and regenerates affected content. Returns a run handle immediately; poll the
+    status endpoint and re-fetch the roadmap on success.
+    """
+    async with get_session() as session:
+        try:
+            roadmap = await roadmap_service.get_roadmap_full(
+                user_id, roadmap_id, session
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail="Roadmap not found") from e
+    if not any(m.milestone_id == milestone_id for m in roadmap.milestones):
+        raise HTTPException(status_code=404, detail="Milestone not found")
+
+    thread_id = uuid.uuid4().hex
+    try:
+        run = await ld_agent_server.start_customize_run(
+            roadmap_id=roadmap_id,
+            milestone_id=milestone_id,
+            instructions=request.instructions,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+    except ld_agent_server.AgentServerUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except ld_agent_server.AgentServerRequestError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    return {
+        "thread_id": thread_id,
+        "run_id": run.get("run_id"),
+        "status": run.get("status"),
+    }
+
+
+@app.get("/v1/roadmaps/{roadmap_id}/customize-runs/{thread_id}/{run_id}")
+async def customize_run_status(
+    roadmap_id: str,
+    thread_id: str,
+    run_id: str,
+    user_id: str = Query(default=DEFAULT_USER_ID),
+):
+    """Proxy the agent-server run status. On `success`, the frontend re-fetches the roadmap."""
+    try:
+        run = await ld_agent_server.get_customize_run(
+            thread_id=thread_id, run_id=run_id
+        )
+    except ld_agent_server.AgentServerUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except ld_agent_server.AgentServerRequestError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"status": run.get("status"), "run_id": run.get("run_id")}
 
 
 if __name__ == "__main__":
