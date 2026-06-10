@@ -84,6 +84,21 @@ async def retrieve_learning_memory(
     return await learning_memory.retrieve_learning_memory(payload, session)
 
 
+async def mark_skillpath_completed(
+    user_id: str,
+    skillpath_id: str,
+    session: AsyncSession,
+    *,
+    completion_advisor=None,
+):
+    return await learning_memory.mark_skillpath_completed(
+        user_id,
+        skillpath_id,
+        session,
+        completion_advisor=completion_advisor,
+    )
+
+
 async def rerank_memories(
     payload: MemoryRerankRequest,
     *,

@@ -81,3 +81,4 @@ class MemoryRerankPurpose(str, Enum):
     HINT_GENERATION = "hint_generation"
     CODE_CORRECTION = "code_correction"
     CONTENT_GENERATION = "content_generation"
+    ROADMAP_PLANNING = "roadmap_planning"

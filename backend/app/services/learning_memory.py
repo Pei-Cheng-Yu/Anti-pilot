@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 from uuid import uuid4
 
+from app.advisors.memory_advisors import advise_skillpath_completion
 from app.db.model import (
     CodingProblemAttemptModel,
     LearnerMemoryNoteModel,
@@ -19,6 +20,7 @@ from app.schema.entities import (
     CodingProblemAttempt,
     LearnerMemoryNote,
     LearningMemoryContext,
+    MarkSkillpathCompletedResult,
     MemoryConsolidationJudgment,
     MergeMemoryNotesInput,
     MergeMemoryNotesResult,
@@ -27,6 +29,8 @@ from app.schema.entities import (
     ResolveMemoryConflictResult,
     RetrieveLearningMemoryInput,
     SkillMasteryState,
+    SkillpathCompletionAdvisorOutput,
+    SkillPathItem,
     TestCaseResult,
     UpdateMemoryNoteInput,
 )
@@ -1344,6 +1348,209 @@ async def get_skill_mastery_state(
     return _to_mastery_state(row) if row else None
 
 
+SkillpathCompletionAdvisorProvider = Callable[
+    [SkillPathItem, "SkillMasteryState | None", list[CodingProblemAttempt]],
+    Any,
+]
+
+_DETERMINISTIC_COMPLETION_ADVICE = SkillpathCompletionAdvisorOutput(
+    suggested_mastery_status=MasteryStatus.PRACTICING,
+    mastery_signal_salience=0.5,
+    signal_strength="weak",
+    reasoning="Deterministic fallback: completion recorded without strong evidence.",
+)
+
+
+def _completion_env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _completion_has_llm_credentials() -> bool:
+    return any(
+        os.getenv(name)
+        for name in ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY")
+    )
+
+
+def _default_completion_advisor() -> SkillpathCompletionAdvisorProvider | None:
+    """LLM-first advisor when enabled and credentialed; None triggers fallback."""
+    if not _completion_env_flag("ENABLE_SKILLPATH_COMPLETION_ADVISOR", False):
+        return None
+    if not _completion_has_llm_credentials():
+        return None
+
+    async def _advisor(
+        skillpath: SkillPathItem,
+        mastery_state: SkillMasteryState | None,
+        recent_attempts: list[CodingProblemAttempt],
+    ) -> SkillpathCompletionAdvisorOutput:
+        return await advise_skillpath_completion(
+            skillpath, mastery_state, recent_attempts
+        )
+
+    return _advisor
+
+
+async def mark_skillpath_completed(
+    user_id: str,
+    skillpath_id: str,
+    session: AsyncSession,
+    *,
+    completion_advisor: SkillpathCompletionAdvisorProvider | None = None,
+) -> MarkSkillpathCompletedResult:
+    """Orchestrate the effects of a learner marking a skillpath done.
+
+    1. Set skillpaths.status = "completed" (unconditional).
+    2. Load mastery state + recent attempts.
+    3. Judge signal strength with the completion advisor (LLM-first, deterministic
+       fallback when disabled / uncredentialed / invalid output).
+    4. Hard guard: "mastered" requires at least one correct attempt.
+    5. Upsert skill_mastery_states with the judged status.
+    6. Write a mastery_signal note through the Memory Integrity lifecycle.
+    """
+    from app.services import roadmap as roadmap_service
+
+    # Step 1: always mark the skillpath record completed.
+    skillpath = await roadmap_service.update_skillpath(
+        user_id, skillpath_id, session, status="completed"
+    )
+
+    # Step 2: gather evidence.
+    mastery_state = await get_skill_mastery_state(user_id, skillpath_id, session)
+    attempts_result = await session.execute(
+        select(CodingProblemAttemptModel)
+        .where(
+            CodingProblemAttemptModel.user_id == user_id,
+            CodingProblemAttemptModel.skillpath_id == skillpath_id,
+        )
+        .order_by(CodingProblemAttemptModel.submitted_at.desc())
+        .limit(5)
+    )
+    recent_attempts = [_to_attempt(row) for row in attempts_result.scalars()]
+
+    # Step 3: advisor judgment, LLM-first with deterministic fallback.
+    advisor = (
+        completion_advisor
+        if completion_advisor is not None
+        else _default_completion_advisor()
+    )
+    advisor_used = advisor is not None
+    advice = _DETERMINISTIC_COMPLETION_ADVICE
+    if advisor is not None:
+        try:
+            raw = await advisor(skillpath, mastery_state, recent_attempts)
+            advice = SkillpathCompletionAdvisorOutput.model_validate(raw)
+        except Exception:
+            advice = _DETERMINISTIC_COMPLETION_ADVICE
+            advisor_used = False
+
+    # Step 4: hard guard — "mastered" only with correct-attempt evidence.
+    correct_attempts = [
+        a for a in recent_attempts if a.correctness == AttemptCorrectness.CORRECT
+    ]
+    suggested = advice.suggested_mastery_status
+    if suggested == MasteryStatus.MASTERED and not recent_attempts:
+        suggested = MasteryStatus.PRACTICING
+    elif suggested == MasteryStatus.MASTERED and not correct_attempts:
+        suggested = MasteryStatus.IN_PROGRESS
+
+    # Step 5: upsert mastery state directly (aggregate tracker, not a memory note).
+    now = _utcnow()
+    mastery_row = (
+        await session.execute(
+            select(SkillMasteryStateModel).where(
+                SkillMasteryStateModel.user_id == user_id,
+                SkillMasteryStateModel.skillpath_id == skillpath_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not mastery_row:
+        mastery_row = SkillMasteryStateModel(
+            user_id=user_id,
+            skillpath_id=skillpath_id,
+            status=suggested.value,
+            mastery_score=0.0,
+            successful_attempts=0,
+            failed_attempts=0,
+            strong_concepts=[],
+            weak_concepts=[],
+            last_attempt_at=None,
+            last_updated_at=now,
+        )
+        session.add(mastery_row)
+    mastery_row.status = suggested.value
+    mastery_row.last_updated_at = now
+    await session.commit()
+    await session.refresh(mastery_row)
+    mastery_state_out = _to_mastery_state(mastery_row)
+
+    # Step 6: write mastery_signal through the integrity lifecycle. The Integrity
+    # Service finds overlapping active error_pattern notes and may flag_conflict,
+    # moving them to watch — no explicit downgrade step needed here.
+    note_payload = AddMemoryNoteInput(
+        user_id=user_id,
+        memory_type=MemoryType.MASTERY_SIGNAL,
+        title=f"Completed skillpath: {skillpath.title}",
+        summary=(
+            f"Learner marked skillpath '{skillpath.title}' complete. "
+            f"Suggested mastery: {suggested.value}. {advice.reasoning}"
+        ),
+        linked_skillpath_ids=[skillpath_id],
+        linked_concepts=list(skillpath.learning_objectives or []),
+        evidence_attempt_ids=[a.attempt_id for a in recent_attempts],
+        salience_score=advice.mastery_signal_salience,
+    )
+    mastery_signal = await add_memory_note(note_payload, session)
+
+    return MarkSkillpathCompletedResult(
+        skillpath=skillpath,
+        mastery_state=mastery_state_out,
+        mastery_signal=mastery_signal,
+        advisor_used=advisor_used,
+    )
+
+
+def _collect_linked_skillpath_ids(context: LearningMemoryContext) -> set[str]:
+    """Collect every unique linked_skillpath_id across all note buckets."""
+    ids: set[str] = set()
+    buckets = (
+        context.active_error_patterns,
+        context.mastery_signals,
+        context.teaching_heuristics,
+        context.background_notes,
+        context.relevant_notes,
+    )
+    for bucket in buckets:
+        for note in bucket:
+            for sid in note.linked_skillpath_ids or []:
+                ids.add(sid)
+    return ids
+
+
+async def load_mastery_states_for_skillpaths(
+    user_id: str,
+    skillpath_ids: set[str] | list[str],
+    session: AsyncSession,
+) -> dict[str, SkillMasteryState]:
+    """Batch-load mastery states for a set of skillpaths, keyed by skillpath_id.
+
+    Returns an empty dict (no query issued) when ``skillpath_ids`` is empty.
+    """
+    ids = list(skillpath_ids)
+    if not ids:
+        return {}
+    result = await session.execute(
+        select(SkillMasteryStateModel).where(
+            SkillMasteryStateModel.user_id == user_id,
+            SkillMasteryStateModel.skillpath_id.in_(ids),
+        )
+    )
+    return {row.skillpath_id: _to_mastery_state(row) for row in result.scalars()}
+
+
 async def retrieve_learning_memory(
     payload: RetrieveLearningMemoryInput, session: AsyncSession
 ) -> LearningMemoryContext:
@@ -1407,7 +1614,7 @@ async def retrieve_learning_memory(
         background_notes,
     ) = _partition_notes(relevant_notes)
 
-    return LearningMemoryContext(
+    context = LearningMemoryContext(
         mastery_state=mastery_state,
         recent_attempts=recent_attempts,
         active_error_patterns=active_error_patterns,
@@ -1416,3 +1623,14 @@ async def retrieve_learning_memory(
         background_notes=background_notes,
         relevant_notes=relevant_notes,
     )
+
+    # Bridge: when no skillpath_id was supplied, mastery_state is null. Surface
+    # mastery data for the skillpaths the retrieved notes are scoped to.
+    linked_ids = _collect_linked_skillpath_ids(context)
+    if payload.skillpath_id:
+        linked_ids.discard(payload.skillpath_id)
+    context.linked_mastery_states = await load_mastery_states_for_skillpaths(
+        payload.user_id, linked_ids, session
+    )
+
+    return context

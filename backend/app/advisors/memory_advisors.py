@@ -8,6 +8,7 @@ from typing import Any
 
 from app.schema.entities import (
     AddMemoryNoteInput,
+    CodingProblemAttempt,
     HintRequest,
     HintResponse,
     LearnerMemoryNote,
@@ -16,6 +17,9 @@ from app.schema.entities import (
     MemoryIntegrityEvidence,
     MemoryRerankRequest,
     MemoryRerankResult,
+    SkillMasteryState,
+    SkillpathCompletionAdvisorOutput,
+    SkillPathItem,
 )
 from app.schema.enums import MemoryIntegrityAction
 from deepagents import create_deep_agent
@@ -83,7 +87,10 @@ def build_rerank_advisor_prompt(request: MemoryRerankRequest) -> str:
         "- Return a MemoryRerankResult.\n"
         "- selected memory IDs must come from the candidates.\n"
         "- Choose only memories that improve the requested purpose.\n"
-        "- Provide guidance suitable for the purpose: hint generation, code correction, or content generation.\n"
+        "- Provide guidance suitable for the purpose: hint generation, code correction, content generation, or roadmap planning.\n"
+        "- For roadmap_planning: select notes that should shape which skillpaths to include "
+        "and how to scope this milestone (e.g. error patterns to remediate, mastery signals to skip/compress, "
+        "background or preferences that adjust depth and pacing).\n"
         "- Do not persist or mutate memory.\n\n"
         f"Purpose: {request.purpose.value}\n"
         f"Candidate memory IDs: {candidate_ids}\n\n"
@@ -110,6 +117,45 @@ def build_integrity_advisor_prompt(
         f"Incoming memory:\n{payload.model_dump_json(indent=2)}\n\n"
         f"Candidates:\n{_json_payload([_memory_note_payload(note) for note in candidates])}\n\n"
         f"Evidence:\n{_json_payload([item.model_dump(mode='json') for item in evidence])}"
+    )
+
+
+def build_skillpath_completion_prompt(
+    skillpath: SkillPathItem,
+    mastery_state: SkillMasteryState | None,
+    recent_attempts: list[CodingProblemAttempt],
+) -> str:
+    attempt_summary = [
+        {
+            "attempt_id": attempt.attempt_id,
+            "correctness": attempt.correctness.value,
+            "detected_concepts": attempt.detected_concepts,
+            "detected_mistakes": attempt.detected_mistakes,
+            "score": attempt.score,
+        }
+        for attempt in recent_attempts
+    ]
+    correct_count = sum(
+        1 for attempt in recent_attempts if attempt.correctness.value == "correct"
+    )
+    mastery_payload = (
+        mastery_state.model_dump(mode="json") if mastery_state is not None else None
+    )
+    return (
+        "Judge how strong a skillpath completion signal is.\n\n"
+        "Rules:\n"
+        "- Return a SkillpathCompletionAdvisorOutput.\n"
+        "- suggested_mastery_status must be a valid MasteryStatus value.\n"
+        "- mastery_signal_salience must be between 0.0 and 1.0.\n"
+        "- 'mastered' is ONLY appropriate when the learner has at least one correct\n"
+        "  attempt. With no correct attempts, never suggest 'mastered'.\n"
+        "- Reading or finishing an activity with no correct coding attempt is a weak\n"
+        "  signal: prefer 'practicing' or 'in_progress' with low salience.\n"
+        "- Do not write to the database.\n\n"
+        f"Correct attempt count: {correct_count}\n"
+        f"Skillpath:\n{skillpath.model_dump_json(indent=2)}\n\n"
+        f"Current mastery state:\n{_json_payload(mastery_payload)}\n\n"
+        f"Recent attempts:\n{_json_payload(attempt_summary)}"
     )
 
 
@@ -144,6 +190,14 @@ def create_integrity_advisor_agent(
 ):
     return create_memory_advisor_agent(
         MemoryIntegrityAdvisorRecommendation, backend=backend, model=model
+    )
+
+
+def create_skillpath_completion_advisor_agent(
+    *, backend: Any | None = None, model: str | None = None
+):
+    return create_memory_advisor_agent(
+        SkillpathCompletionAdvisorOutput, backend=backend, model=model
     )
 
 
@@ -257,6 +311,24 @@ async def advise_memory_integrity(
             allowed_actions=allowed_actions,
         ),
         MemoryIntegrityAdvisorRecommendation,
+        agent_factory=agent_factory,
+        backend=backend,
+        model=model,
+    )
+
+
+async def advise_skillpath_completion(
+    skillpath: SkillPathItem,
+    mastery_state: SkillMasteryState | None,
+    recent_attempts: list[CodingProblemAttempt],
+    *,
+    backend: Any | None = None,
+    model: str | None = None,
+    agent_factory: Callable[..., Any] = create_skillpath_completion_advisor_agent,
+) -> SkillpathCompletionAdvisorOutput:
+    return await _invoke_structured_agent(
+        build_skillpath_completion_prompt(skillpath, mastery_state, recent_attempts),
+        SkillpathCompletionAdvisorOutput,
         agent_factory=agent_factory,
         backend=backend,
         model=model,
