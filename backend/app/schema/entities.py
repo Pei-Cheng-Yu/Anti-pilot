@@ -572,6 +572,57 @@ class LearningMemoryContext(BaseModel):
         default_factory=list,
         description="Retrieved learner memory notes ranked for the current task.",
     )
+    linked_mastery_states: dict[str, SkillMasteryState] = Field(
+        default_factory=dict,
+        description=(
+            "Mastery states for skillpaths referenced by the retrieved notes' "
+            "linked_skillpath_ids. Bridges mastery data when no skillpath_id is "
+            "supplied to retrieval (e.g. planner goal/milestone-level)."
+        ),
+    )
+
+
+class SkillpathCompletionAdvisorOutput(BaseModel):
+    """Structured judgment from the Skillpath Completion Advisor.
+
+    Produced when a learner marks a skillpath done. Judges how strong the
+    completion signal is from skillpath content + existing mastery evidence.
+    """
+
+    suggested_mastery_status: MasteryStatus = Field(
+        ..., description="Mastery status the advisor recommends for the skillpath."
+    )
+    mastery_signal_salience: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Importance score (0.0-1.0) for the mastery_signal memory note.",
+    )
+    signal_strength: Literal["none", "weak", "moderate", "strong"] = Field(
+        ..., description="Qualitative strength of the completion signal."
+    )
+    reasoning: str = Field(
+        ..., description="Short explanation for the suggested status and salience."
+    )
+
+
+class MarkSkillpathCompletedResult(BaseModel):
+    """Outcome of marking a skillpath done."""
+
+    skillpath: SkillPathItem = Field(
+        ..., description="The skillpath after its status was set to completed."
+    )
+    mastery_state: SkillMasteryState = Field(
+        ..., description="The upserted mastery state for the skillpath."
+    )
+    mastery_signal: LearnerMemoryNote = Field(
+        ...,
+        description="The mastery_signal memory note written via the integrity lifecycle.",
+    )
+    advisor_used: bool = Field(
+        default=False,
+        description="Whether the LLM completion advisor was invoked (vs deterministic fallback).",
+    )
 
 
 class RecordAndConsolidateAttemptResult(BaseModel):

@@ -6,6 +6,7 @@ from app.schema.entities import (
     HintResponse,
     LearnerMemoryNote,
     LearningMemoryContext,
+    MarkSkillpathCompletedResult,
     RecordAndConsolidateAttemptResult,
     RecordCodingProblemAttemptInput,
     RetrieveLearningMemoryInput,
@@ -125,3 +126,17 @@ async def generate_memory_aware_hint(request: HintRequest) -> HintResponse:
     """
     async with get_session() as session:
         return await service.generate_memory_aware_hint(request, session)
+
+
+@learning_memory_mcp.tool()
+async def mark_skillpath_completed(
+    user_id: str, skillpath_id: str
+) -> MarkSkillpathCompletedResult:
+    """
+    Mark a skillpath as completed for a learner.
+    Sets the skillpath status to completed, judges mastery from existing evidence
+    via the completion advisor, upserts mastery state, and writes a mastery_signal
+    memory note through the integrity lifecycle.
+    """
+    async with get_session() as session:
+        return await service.mark_skillpath_completed(user_id, skillpath_id, session)

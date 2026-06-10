@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 from collections.abc import Callable
 from typing import Any
@@ -13,6 +14,8 @@ from app.schema.entities import (
     SelectedMemoryMetadata,
 )
 from app.schema.enums import MemoryRerankPurpose, MemoryType, TeachingAction
+
+logger = logging.getLogger(__name__)
 
 MemoryRerankAdvisor = Callable[[MemoryRerankRequest], Any]
 
@@ -33,8 +36,17 @@ def _has_llm_credentials() -> bool:
 
 def _default_rerank_advisor() -> MemoryRerankAdvisor | None:
     if not _env_flag("ENABLE_MEMORY_RERANK_ADVISOR", False):
+        logger.info(
+            "rerank advisor: disabled — ENABLE_MEMORY_RERANK_ADVISOR is not set in "
+            "this process env; using deterministic fallback."
+        )
         return None
     if not _has_llm_credentials():
+        logger.warning(
+            "rerank advisor: ENABLE_MEMORY_RERANK_ADVISOR is set but no LLM "
+            "credentials (GOOGLE_API_KEY/GEMINI_API_KEY/GOOGLE_GENAI_API_KEY) found "
+            "in this process env; using deterministic fallback."
+        )
         return None
     return rerank_memory_advice
 
@@ -119,15 +131,42 @@ async def arerank_memories(
 ) -> MemoryRerankResult:
     fallback = _fallback_result(request)
     advisor = advisor or _default_rerank_advisor()
-    if advisor is None or not request.candidate_memories:
+    if advisor is None:
+        return fallback
+    if not request.candidate_memories:
+        logger.info(
+            "rerank advisor: purpose=%s skipped — no candidate memories to rerank.",
+            request.purpose.value,
+        )
         return fallback
     try:
+        logger.info(
+            "rerank advisor: purpose=%s invoking advisor on %d candidate(s).",
+            request.purpose.value,
+            len(request.candidate_memories),
+        )
         maybe_result = advisor(request)
         if inspect.isawaitable(maybe_result):
             maybe_result = await maybe_result
     except Exception:
+        logger.exception(
+            "rerank advisor: purpose=%s raised — falling back to deterministic order.",
+            request.purpose.value,
+        )
         return fallback
-    return _validate_result(maybe_result, request) or fallback
+    validated = _validate_result(maybe_result, request)
+    if validated is None:
+        logger.warning(
+            "rerank advisor: purpose=%s returned invalid output — using fallback.",
+            request.purpose.value,
+        )
+        return fallback
+    logger.info(
+        "rerank advisor: purpose=%s selected %d memor(ies).",
+        request.purpose.value,
+        len(validated.selected_memories),
+    )
+    return validated
 
 
 def build_content_generation_memory_guidance(

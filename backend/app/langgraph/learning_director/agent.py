@@ -271,7 +271,13 @@ async def run_planner(
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None,
-        lambda: _planner.invoke({"goal_spec": goal, "learning_profile": profile}),
+        lambda: _planner.invoke(
+            {
+                "goal_spec": goal,
+                "learning_profile": profile,
+                "user_id": resolved_user_id,
+            }
+        ),
     )
 
     roadmap_id = planner_roadmap_id(result)

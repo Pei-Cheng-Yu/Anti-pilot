@@ -23,6 +23,7 @@ from app.schema.entities import (
 )
 from app.services import goal as goal_service
 from app.services import learning_profile as learning_profile_service
+from app.services import memory_service
 from app.services import roadmap as roadmap_service
 from app.services import roadmap_customization as roadmap_customization_service
 from dotenv import load_dotenv
@@ -363,9 +364,16 @@ async def update_skillpath_status(
     """
     async with get_session() as session:
         try:
-            await roadmap_service.update_skillpath(
-                user_id, skillpath_id, session, status=request.status
-            )
+            if request.status == "completed":
+                # Completion runs the full pipeline (sets status=completed,
+                # assesses mastery, writes mastery_signal via integrity).
+                await memory_service.mark_skillpath_completed(
+                    user_id, skillpath_id, session
+                )
+            else:
+                await roadmap_service.update_skillpath(
+                    user_id, skillpath_id, session, status=request.status
+                )
             return await roadmap_service.get_roadmap_full(user_id, roadmap_id, session)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e

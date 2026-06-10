@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.db.model import ReviewConceptModel
 from app.langgraph.learning_director import agent as learning_director_agent
-from app.main import app
+from app.main import DEFAULT_USER_ID, app
 from app.routers.reviews import (
     ReviewGradeRequest,
     generate_task_for_concept,
@@ -140,6 +140,62 @@ def test_get_roadmap_not_found(monkeypatch):
     response = client.get("/v1/roadmaps/non-existent-id")
     assert response.status_code == 404
     assert response.json()["detail"] == "Roadmap not found"
+
+
+def test_status_completed_runs_completion_pipeline(monkeypatch):
+    """POST /status with status='completed' routes to mark_skillpath_completed
+    (the full completion pipeline), NOT a plain update_skillpath."""
+    called = {}
+
+    async def fake_mark_completed(user_id, skillpath_id, session):
+        called["args"] = (user_id, skillpath_id)
+        return MagicMock()
+
+    # update_skillpath must NOT be called on the completed branch.
+    update_skillpath = AsyncMock()
+
+    async def fake_get_roadmap_full(user_id, roadmap_id, session):
+        return RoadmapFull(
+            roadmap_id=roadmap_id,
+            title="Test Roadmap",
+            version=1,
+            summary="Test roadmap",
+            target_outcome="Ship tests",
+            assumptions=[],
+            milestones=[],
+        )
+
+    monkeypatch.setattr("app.main.get_session", fake_session)
+    monkeypatch.setattr(
+        "app.main.memory_service.mark_skillpath_completed", fake_mark_completed
+    )
+    monkeypatch.setattr("app.main.roadmap_service.update_skillpath", update_skillpath)
+    monkeypatch.setattr(
+        "app.main.roadmap_service.get_roadmap_full", fake_get_roadmap_full
+    )
+
+    response = client.post(
+        "/v1/roadmaps/r1/skillpaths/sp1/status", json={"status": "completed"}
+    )
+    assert response.status_code == 200
+    assert response.json()["roadmap_id"] == "r1"
+    assert called["args"] == (DEFAULT_USER_ID, "sp1")
+    update_skillpath.assert_not_awaited()
+
+
+def test_status_completed_unknown_returns_404(monkeypatch):
+    async def fake_mark_completed(user_id, skillpath_id, session):
+        raise ValueError("SkillPath sp-unknown not found")
+
+    monkeypatch.setattr("app.main.get_session", fake_session)
+    monkeypatch.setattr(
+        "app.main.memory_service.mark_skillpath_completed", fake_mark_completed
+    )
+
+    response = client.post(
+        "/v1/roadmaps/r1/skillpaths/sp-unknown/status", json={"status": "completed"}
+    )
+    assert response.status_code == 404
 
 
 @patch("app.main.build_planner_graph")
@@ -679,6 +735,7 @@ def _roadmap_full_with_skillpath(
 
 
 def test_update_skillpath_status_happy_path(monkeypatch):
+    """Non-completion status transitions go through plain update_skillpath."""
     roadmap_id = "roadmap-1"
     skillpath_id = "sp-1"
 
@@ -690,10 +747,10 @@ def test_update_skillpath_status_happy_path(monkeypatch):
             title="Skillpath 1",
             description="Desc",
             estimated_hours=1,
-            status="completed",
+            status="revising",
         )
     )
-    refreshed = _roadmap_full_with_skillpath(roadmap_id, skillpath_id, "completed")
+    refreshed = _roadmap_full_with_skillpath(roadmap_id, skillpath_id, "revising")
 
     monkeypatch.setattr("app.main.get_session", fake_session)
     monkeypatch.setattr("app.main.roadmap_service.update_skillpath", update_skillpath)
@@ -703,14 +760,14 @@ def test_update_skillpath_status_happy_path(monkeypatch):
 
     response = client.post(
         f"/v1/roadmaps/{roadmap_id}/skillpaths/{skillpath_id}/status",
-        json={"status": "completed"},
+        json={"status": "revising"},
     )
     assert response.status_code == 200
     body = response.json()
     assert body["roadmap_id"] == roadmap_id
-    assert body["milestones"][0]["skillpaths"][0]["status"] == "completed"
+    assert body["milestones"][0]["skillpaths"][0]["status"] == "revising"
     update_skillpath.assert_awaited_once()
-    assert update_skillpath.await_args.kwargs == {"status": "completed"}
+    assert update_skillpath.await_args.kwargs == {"status": "revising"}
 
 
 def test_update_skillpath_status_rejects_invalid_value():
@@ -733,7 +790,7 @@ def test_update_skillpath_status_returns_404_when_skillpath_missing(monkeypatch)
 
     response = client.post(
         "/v1/roadmaps/roadmap-1/skillpaths/sp-1/status",
-        json={"status": "completed"},
+        json={"status": "revising"},
     )
     assert response.status_code == 404
     assert "not found" in response.json()["detail"]
