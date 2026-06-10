@@ -393,6 +393,57 @@ async def test_roadmap_service_roundtrip_and_scoping(db_session, test_user: str)
 
 
 @pytest.mark.asyncio
+async def test_add_skillpath_creates_new_skillpath_under_milestone(
+    db_session, test_user: str
+):
+    roadmap_id = f"roadmap-{uuid4()}"
+    milestone = make_milestone(roadmap_id)
+    await roadmap_service.save_roadmap(
+        user_id=test_user,
+        roadmap_id=roadmap_id,
+        title="FastAPI",
+        version=1,
+        summary="s",
+        target_outcome="o",
+        assumptions=[],
+        milestones=[milestone],
+        skillpaths=[make_skillpath(milestone.milestone_id)],
+        session=db_session,
+    )
+
+    created = await roadmap_service.add_skillpath(
+        user_id=test_user,
+        milestone_id=milestone.milestone_id,
+        title="Unit testing",
+        description="Write pytest unit tests",
+        session=db_session,
+    )
+
+    # Server-generated id, flagged for content generation, no content yet.
+    assert created.skillpath_id.startswith("sp-")
+    assert created.title == "Unit testing"
+    assert created.milestone_id == milestone.milestone_id
+    assert created.roadmap_id == roadmap_id
+    assert created.need_generation is True
+    assert created.learning_contents == []
+
+    reloaded = await roadmap_service.get_roadmap_full(test_user, roadmap_id, db_session)
+    sp_ids = {sp.skillpath_id for sp in reloaded.milestones[0].skillpaths}
+    assert created.skillpath_id in sp_ids
+    assert len(reloaded.milestones[0].skillpaths) == 2
+
+    # Unknown milestone / cross-user is rejected.
+    with pytest.raises(ValueError, match="not found for user"):
+        await roadmap_service.add_skillpath(
+            user_id="other-user",
+            milestone_id=milestone.milestone_id,
+            title="x",
+            description="y",
+            session=db_session,
+        )
+
+
+@pytest.mark.asyncio
 async def test_roadmap_service_links_one_primary_roadmap_per_goal(
     db_session, test_user: str
 ):

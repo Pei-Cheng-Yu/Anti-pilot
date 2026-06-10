@@ -1,3 +1,5 @@
+import uuid
+
 from app.db.model import (
     GoalModel,
     LearningContentModel,
@@ -347,6 +349,57 @@ async def update_skillpath(
     for key, value in fields.items():
         setattr(row, key, value)
     await session.commit()
+    return _to_skillpath_item(row, roadmap_id=roadmap_id)
+
+
+async def add_skillpath(
+    user_id: str,
+    milestone_id: str,
+    title: str,
+    description: str,
+    session: AsyncSession,
+    estimated_hours: float = 1.0,
+    learning_objectives: list[str] | None = None,
+    prerequisite_skillpath_ids: list[str] | None = None,
+    practice_mode: str | None = None,
+) -> SkillPathItem:
+    """Create a new skillpath under a user's milestone.
+
+    The server generates the skillpath_id — callers never supply it. New
+    skillpaths are marked need_generation=True so content generation will
+    produce their learning content.
+    """
+    result = await session.execute(
+        select(MilestoneModel, RoadmapModel.roadmap_id)
+        .join(RoadmapModel, MilestoneModel.roadmap_id == RoadmapModel.roadmap_id)
+        .where(
+            MilestoneModel.milestone_id == milestone_id,
+            RoadmapModel.user_id == user_id,
+        )
+    )
+    found = result.one_or_none()
+    if not found:
+        raise ValueError(f"Milestone {milestone_id} not found for user {user_id}")
+    _milestone, roadmap_id = found
+
+    row = SkillPathModel(
+        skillpath_id=f"sp-{uuid.uuid4().hex}",
+        milestone_id=milestone_id,
+        title=title,
+        description=description,
+        estimated_hours=estimated_hours,
+        learning_objectives=learning_objectives or [],
+        prerequisite_skillpath_ids=prerequisite_skillpath_ids or [],
+        status="generated",
+        need_generation=True,
+        need_modification=False,
+        revision_reason=None,
+        affected_downstream_ids=[],
+        practice_mode=practice_mode,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row, attribute_names=["learning_contents"])
     return _to_skillpath_item(row, roadmap_id=roadmap_id)
 
 
